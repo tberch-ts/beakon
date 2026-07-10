@@ -1,35 +1,32 @@
-# Fly.io config for the Beakon backend.
-# Deploy: install flyctl, then `fly launch --no-deploy` (or edit app name below),
-# create a volume, set secrets, and `fly deploy`. See GITHUB-HOSTING.md.
+# fly.toml app configuration file generated for beakon on 2026-07-10T23:16:09Z
+#
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+#
 
-app = "beakon"                 # change to your unique Fly app name
-primary_region = "ord"         # pick a region near you: fly platform regions
+app = 'beakon'
+primary_region = 'ams'
 
 [build]
-  dockerfile = "Dockerfile"
+  dockerfile = 'Dockerfile'
 
 [env]
-  NODE_ENV = "production"
-  PORT = "3000"
-  DB_PATH = "/data/beakon.db"
-  # Update this to your real URL once known (https://<app>.fly.dev or custom domain)
-  BASE_URL = "https://beakon.fly.dev"
-  TRIAL_DAYS = "14"
+  BASE_URL = 'https://beakon.fly.dev'
+  DB_PATH = '/data/beakon.db'
+  NODE_ENV = 'production'
+  PORT = '3000'
+  TRIAL_DAYS = '14'
+
+[[mounts]]
+  source = 'beakon_data'
+  destination = '/data'
 
 [http_service]
-  internal_port = 3000
+  internal_port = 8080
   force_https = true
-  # Keep one machine always running so the every-minute scheduler never sleeps.
-  auto_stop_machines = false
+  auto_stop_machines = 'off'
   auto_start_machines = true
   min_machines_running = 1
 
-# Persistent volume for the SQLite database. Create it first:
-#   fly volumes create beakon_data --region ord --size 1
-[[mounts]]
-  source = "beakon_data"
-  destination = "/data"
-
 [[vm]]
-  size = "shared-cpu-1x"
-  memory = "256mb"
+  size = 'shared-cpu-1x'
+  memory = '256mb'
