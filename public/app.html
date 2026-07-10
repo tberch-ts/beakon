@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dashboard · Beakon</title>
+<style>
+  :root { --bg:#0b1220; --card:#121b2e; --line:#22304d; --text:#e8eefc; --muted:#90a0c0; --accent:#3b82f6; --green:#22c55e; --red:#ef4444; }
+  * { box-sizing:border-box; }
+  body { margin:0; font:15px/1.5 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif; background:var(--bg); color:var(--text); }
+  a { color:var(--accent); text-decoration:none; }
+  .top { display:flex; align-items:center; justify-content:space-between; padding:16px 20px; border-bottom:1px solid var(--line); }
+  .brand { font-weight:800; font-size:18px; } .brand span { color:var(--accent); }
+  .wrap { max-width:920px; margin:0 auto; padding:24px 18px 60px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:18px; margin:14px 0; }
+  h1 { font-size:22px; margin:6px 0 2px; } h2 { font-size:16px; margin:0 0 12px; }
+  label { display:block; font-size:13px; color:var(--muted); margin:10px 0 4px; }
+  input { width:100%; padding:10px 12px; border-radius:8px; border:1px solid var(--line); background:#0d1626; color:var(--text); }
+  button, .btn { cursor:pointer; border:0; border-radius:8px; padding:10px 16px; font-weight:600; background:var(--accent); color:#fff; }
+  .btn.secondary { background:transparent; border:1px solid var(--line); color:var(--text); }
+  .btn.danger { background:transparent; border:1px solid var(--red); color:#fca5a5; padding:6px 10px; font-size:13px; }
+  table { width:100%; border-collapse:collapse; } th,td { text-align:left; padding:10px 8px; border-bottom:1px solid var(--line); font-size:14px; }
+  th { color:var(--muted); font-weight:600; font-size:12px; text-transform:uppercase; letter-spacing:.4px; }
+  .pill { display:inline-block; padding:2px 10px; border-radius:999px; font-size:12px; font-weight:700; }
+  .pill.up { background:rgba(34,197,94,.15); color:#86efac; } .pill.down { background:rgba(239,68,68,.15); color:#fca5a5; } .pill.unknown { background:rgba(144,160,192,.15); color:var(--muted); }
+  .muted { color:var(--muted); } .err { color:#fca5a5; font-size:14px; margin:8px 0; }
+  .banner { padding:12px 14px; border-radius:10px; margin:8px 0 0; font-size:14px; background:rgba(245,158,11,.12); border:1px solid rgba(245,158,11,.4); color:#fcd34d; }
+  .row { display:flex; gap:10px; flex-wrap:wrap; align-items:flex-end; } .row > div { flex:1; min-width:170px; }
+  nav a { margin-left:16px; }
+  .hide { display:none; }
+</style>
+</head>
+<body>
+<div class="top"><div class="brand">Bea<span>kon</span></div><nav id="nav"></nav></div>
+<div class="wrap" id="root"><p class="muted">Loading…</p></div>
+
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js";
+import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut }
+  from "https://www.gstatic.com/firebasejs/10.12.5/firebase-auth.js";
+import { firebaseConfig } from "./firebase-config.js";
+
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const root = document.getElementById('root');
+const nav = document.getElementById('nav');
+
+const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c]));
+
+async function api(path, opts = {}) {
+  const token = await auth.currentUser.getIdToken();
+  const res = await fetch(path, {
+    ...opts,
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}`, ...(opts.headers || {}) },
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
+  return data;
+}
+
+onAuthStateChanged(auth, (user) => {
+  if (user) { nav.innerHTML = `<a href="#" id="signout">Sign out</a>`;
+    document.getElementById('signout').onclick = (e) => { e.preventDefault(); signOut(auth); };
+    renderDashboard();
+  } else { nav.innerHTML = ''; renderAuth(); }
+});
+
+// ---------- Auth screen ----------
+function renderAuth() {
+  let mode = 'login';
+  const draw = () => {
+    root.innerHTML = `
+      <div class="card" style="max-width:420px;margin:40px auto;">
+        <h1>${mode === 'login' ? 'Sign in' : 'Start your free trial'}</h1>
+        <p class="muted">${mode === 'login' ? 'Welcome back.' : '14 days free. No card required.'}</p>
+        <div class="err hide" id="autherr"></div>
+        <label>Email</label><input id="email" type="email" autocomplete="email">
+        <label>Password</label><input id="password" type="password" minlength="6" autocomplete="${mode === 'login' ? 'current-password' : 'new-password'}">
+        <div style="margin-top:16px;"><button id="go">${mode === 'login' ? 'Sign in' : 'Create account'}</button></div>
+        <p class="muted" style="margin-top:14px;">
+          ${mode === 'login' ? `No account? <a href="#" id="toggle">Start free</a>` : `Already have one? <a href="#" id="toggle">Sign in</a>`}
+        </p>
+      </div>`;
+    document.getElementById('toggle').onclick = (e) => { e.preventDefault(); mode = mode === 'login' ? 'signup' : 'login'; draw(); };
+    document.getElementById('go').onclick = submit;
+    document.getElementById('password').addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
+  };
+  async function submit() {
+    const email = document.getElementById('email').value.trim();
+    const password = document.getElementById('password').value;
+    const errEl = document.getElementById('autherr');
+    errEl.classList.add('hide');
+    try {
+      if (mode === 'login') await signInWithEmailAndPassword(auth, email, password);
+      else await createUserWithEmailAndPassword(auth, email, password);
+    } catch (err) {
+      errEl.textContent = err.message.replace('Firebase: ', '');
+      errEl.classList.remove('hide');
+    }
+  }
+  draw();
+}
+
+// ---------- Dashboard ----------
+function statusPill(s) { return s === 'up' ? '<span class="pill up">UP</span>' : s === 'down' ? '<span class="pill down">DOWN</span>' : '<span class="pill unknown">—</span>'; }
+function fmtTime(t) { return t ? `<span class="muted">${new Date(t * 1000).toLocaleString()}</span>` : '<span class="muted">never</span>'; }
+function fmtSsl(t) { if (!t) return '<span class="muted">—</span>'; const d = Math.floor((t - Date.now() / 1000) / 86400); return `<span class="pill ${d <= 14 ? 'down' : 'up'}">${d}d</span>`; }
+
+async function renderDashboard() {
+  root.innerHTML = `<p class="muted">Loading…</p>`;
+  let me, monitors;
+  try { [me, monitors] = await Promise.all([api('/api/me'), api('/api/monitors')]); }
+  catch (err) { root.innerHTML = `<div class="err">Error: ${esc(err.message)}</div>`; return; }
+
+  const params = new URLSearchParams(location.search);
+  let banner = '';
+  if (params.get('success')) banner = `<div class="banner" style="background:rgba(34,197,94,.12);border-color:rgba(34,197,94,.4);color:#86efac;">✓ Subscription active. Thank you!</div>`;
+  else if (me.subscriptionStatus === 'trialing') banner = `<div class="banner">Free trial — ${me.trialDaysLeft} day(s) left. <a href="#billing">Upgrade to keep monitoring →</a></div>`;
+  else if (!me.active) banner = `<div class="banner">Your account is inactive — monitoring is paused. <a href="#billing">Reactivate →</a></div>`;
+
+  const atLimit = me.monitorCount >= me.limit;
+  const rows = monitors.map((m) => `
+    <tr>
+      <td><strong>${esc(m.name)}</strong><br><span class="muted">${esc(m.url)}</span></td>
+      <td>${statusPill(m.lastStatus)}${m.lastError ? `<br><span class="muted" style="font-size:12px">${esc(m.lastError)}</span>` : ''}</td>
+      <td>${m.lastResponseMs != null ? m.lastResponseMs + ' ms' : '<span class="muted">—</span>'}</td>
+      <td>${fmtSsl(m.sslExpiresAt)}</td>
+      <td>${fmtTime(m.lastCheckedAt)}</td>
+      <td><button class="btn danger" data-del="${m.id}">Delete</button></td>
+    </tr>`).join('');
+
+  root.innerHTML = `
+    ${banner}
+    <h1>Monitors</h1>
+    <p class="muted">${me.monitorCount} of ${me.limit} used · plan: ${esc(me.planLabel)} · ${esc(me.email)}</p>
+
+    <div class="card">
+      <h2>Add a monitor</h2>
+      ${atLimit ? `<div class="err">You've hit your plan limit (${me.limit}). <a href="#billing">Upgrade →</a></div>` : `
+      <div class="row">
+        <div><label>Name</label><input id="m-name" placeholder="Client homepage"></div>
+        <div><label>URL</label><input id="m-url" placeholder="example.com"></div>
+        <div style="flex:0 0 auto;"><label>&nbsp;</label><button id="m-add">Add</button></div>
+      </div>
+      <div class="err hide" id="add-err"></div>`}
+    </div>
+
+    <div class="card">
+      ${monitors.length === 0
+        ? `<p class="muted">No monitors yet. Add your first site above — Beakon checks it every minute and emails you the moment it goes down or the SSL is about to expire.</p>`
+        : `<table><thead><tr><th>Site</th><th>Status</th><th>Response</th><th>SSL</th><th>Last check</th><th></th></tr></thead><tbody>${rows}</tbody></table>`}
+    </div>
+
+    <div class="card">
+      <h2>Alert settings</h2>
+      <div class="row">
+        <div><label>Send alerts to</label><input id="alert-email" type="email" value="${esc(me.alertEmail || me.email)}"></div>
+        <div style="flex:0 0 auto;"><label>&nbsp;</label><button id="save-email" class="btn secondary">Save</button></div>
+      </div>
+    </div>
+
+    <div class="card" id="billing">
+      <h2>Billing — ${esc(me.subscriptionStatus)}${me.subscriptionStatus === 'trialing' ? ` · ${me.trialDaysLeft} trial day(s) left` : ''}</h2>
+      <div class="row">
+        <button data-plan="starter">Subscribe — Starter $19/mo</button>
+        <button data-plan="agency">Subscribe — Agency $49/mo</button>
+        ${me.subscriptionStatus === 'active' ? `<button id="portal" class="btn secondary">Manage / cancel</button>` : ''}
+      </div>
+    </div>`;
+
+  // Wire up actions
+  const addBtn = document.getElementById('m-add');
+  if (addBtn) addBtn.onclick = async () => {
+    const name = document.getElementById('m-name').value;
+    const url = document.getElementById('m-url').value;
+    const errEl = document.getElementById('add-err'); errEl.classList.add('hide');
+    try { await api('/api/monitors', { method: 'POST', body: JSON.stringify({ name, url }) }); renderDashboard(); }
+    catch (err) { errEl.textContent = err.message === 'invalid_url' ? 'That URL looks invalid.' : err.message; errEl.classList.remove('hide'); }
+  };
+  root.querySelectorAll('[data-del]').forEach((b) => b.onclick = async () => {
+    if (!confirm('Delete this monitor?')) return;
+    await api(`/api/monitors/${b.dataset.del}/delete`, { method: 'POST' }); renderDashboard();
+  });
+  document.getElementById('save-email').onclick = async (e) => {
+    const btn = e.target; const orig = btn.textContent; btn.textContent = 'Saving…';
+    await api('/api/settings', { method: 'POST', body: JSON.stringify({ alertEmail: document.getElementById('alert-email').value }) });
+    btn.textContent = 'Saved ✓'; setTimeout(() => (btn.textContent = orig), 1500);
+  };
+  root.querySelectorAll('[data-plan]').forEach((b) => b.onclick = async () => {
+    b.disabled = true; b.textContent = 'Redirecting…';
+    try { const { url } = await api('/api/billing/checkout', { method: 'POST', body: JSON.stringify({ plan: b.dataset.plan }) }); location.href = url; }
+    catch (err) { alert('Checkout error: ' + err.message); b.disabled = false; }
+  });
+  const portal = document.getElementById('portal');
+  if (portal) portal.onclick = async () => { const { url } = await api('/api/billing/portal', { method: 'POST' }); location.href = url; };
+}
+</script>
+</body>
+</html>

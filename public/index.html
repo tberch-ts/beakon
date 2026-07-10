@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Beakon — Know before your clients do</title>
+<meta name="description" content="Uptime, SSL and domain monitoring built for agencies and freelancers. Beakon checks your clients' sites every minute and alerts you the moment something breaks.">
+<style>
+  :root { --bg:#0b1220; --card:#121b2e; --line:#22304d; --text:#e8eefc; --muted:#90a0c0; --accent:#3b82f6; --green:#22c55e; }
+  * { box-sizing:border-box; }
+  body { margin:0; font:16px/1.6 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif; background:var(--bg); color:var(--text); }
+  a { color:var(--accent); text-decoration:none; }
+  .wrap { max-width:1000px; margin:0 auto; padding:0 20px; }
+  header { display:flex; align-items:center; justify-content:space-between; padding:20px 0; }
+  .brand { font-weight:800; font-size:20px; letter-spacing:-.3px; }
+  .brand span { color:var(--accent); }
+  .btn { display:inline-block; background:var(--accent); color:#fff; padding:12px 22px; border-radius:10px; font-weight:700; }
+  .btn.ghost { background:transparent; border:1px solid var(--line); color:var(--text); }
+  .hero { text-align:center; padding:64px 0 40px; }
+  .hero h1 { font-size:46px; line-height:1.1; letter-spacing:-1px; margin:0 0 16px; }
+  .hero h1 .hl { color:var(--accent); }
+  .hero p { font-size:19px; color:var(--muted); max-width:640px; margin:0 auto 28px; }
+  .cta-row { display:flex; gap:12px; justify-content:center; flex-wrap:wrap; }
+  .sub { font-size:13px; color:var(--muted); margin-top:14px; }
+  .grid { display:grid; grid-template-columns:repeat(3,1fr); gap:18px; margin:56px 0; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:22px; }
+  .card h3 { margin:0 0 8px; font-size:17px; }
+  .card p { margin:0; color:var(--muted); font-size:15px; }
+  .icon { font-size:24px; }
+  .section-title { text-align:center; font-size:30px; letter-spacing:-.5px; margin:60px 0 8px; }
+  .section-sub { text-align:center; color:var(--muted); margin:0 0 30px; }
+  .pricing { display:grid; grid-template-columns:repeat(2,1fr); gap:18px; max-width:680px; margin:0 auto; }
+  .price { font-size:34px; font-weight:800; }
+  .price span { font-size:15px; color:var(--muted); font-weight:500; }
+  ul.feat { list-style:none; padding:0; margin:14px 0 20px; }
+  ul.feat li { padding:6px 0; color:var(--muted); }
+  ul.feat li::before { content:"✓ "; color:var(--green); font-weight:800; }
+  .quote { max-width:680px; margin:60px auto; text-align:center; font-size:20px; color:var(--text); }
+  footer { border-top:1px solid var(--line); margin-top:60px; padding:30px 0; color:var(--muted); font-size:14px; text-align:center; }
+  @media (max-width:760px){ .grid,.pricing{grid-template-columns:1fr} .hero h1{font-size:34px} }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="brand">Bea<span>kon</span></div>
+    <div><a href="/app" style="margin-right:18px;">Sign in</a><a class="btn" href="/app">Start free</a></div>
+  </header>
+
+  <section class="hero">
+    <h1>Know before your <span class="hl">clients</span> do.</h1>
+    <p>Beakon watches every site you manage — uptime, response time, and SSL certificate expiry — and emails you the second something breaks. No more finding out from an angry client.</p>
+    <div class="cta-row">
+      <a class="btn" href="/app">Start your 14-day free trial</a>
+      <a class="btn ghost" href="#pricing">See pricing</a>
+    </div>
+    <div class="sub">No credit card required · Set up your first monitor in 60 seconds</div>
+  </section>
+
+  <section class="grid">
+    <div class="card"><div class="icon">⏱️</div><h3>1-minute uptime checks</h3><p>Every site is pinged every minute. Instant email alert on the first failed check, and again when it recovers.</p></div>
+    <div class="card"><div class="icon">🔒</div><h3>SSL expiry warnings</h3><p>Expired certificates make a client's whole site throw scary browser warnings. Beakon warns you 14 days out — automatically.</p></div>
+    <div class="card"><div class="icon">📋</div><h3>Built for many sites</h3><p>One dashboard for every client. Add 20, 50, 100 sites. See the whole portfolio's health at a glance.</p></div>
+  </section>
+
+  <h2 class="section-title">Stop being the last to know</h2>
+  <p class="section-sub">Your clients expect their site to just work. Beakon makes sure you hear about problems first.</p>
+  <div class="quote">“Before Beakon, I found out a client's site was down when <em>they</em> called. Now I've usually fixed it before they notice.”</div>
+
+  <h2 class="section-title" id="pricing">Simple pricing</h2>
+  <p class="section-sub">Start free for 14 days. Cancel anytime.</p>
+  <div class="pricing">
+    <div class="card">
+      <h3>Starter</h3>
+      <div class="price">$19<span>/mo</span></div>
+      <ul class="feat"><li>Up to 20 monitors</li><li>1-minute checks</li><li>Uptime + SSL alerts</li><li>Email notifications</li></ul>
+      <a class="btn" href="/app">Start free</a>
+    </div>
+    <div class="card" style="border-color:var(--accent);">
+      <h3>Agency</h3>
+      <div class="price">$49<span>/mo</span></div>
+      <ul class="feat"><li>Up to 100 monitors</li><li>1-minute checks</li><li>Uptime + SSL alerts</li><li>Priority support</li></ul>
+      <a class="btn" href="/app">Start free</a>
+    </div>
+  </div>
+
+  <footer>
+    <div class="brand" style="font-size:16px;margin-bottom:8px;">Bea<span>kon</span></div>
+    © <span id="yr"></span> Beakon · Know before your clients do.
+    <script>document.getElementById('yr').textContent=new Date().getFullYear();</script>
+  </footer>
+</div>
+</body>
+</html>

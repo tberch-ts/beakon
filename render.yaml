@@ -1,0 +1,48 @@
+# Render.com Blueprint for the Beakon backend.
+# In Render: New → Blueprint → point at this repo. Then set the `sync: false`
+# secrets in the dashboard. See GITHUB-HOSTING.md.
+#
+# NOTE: a persistent disk (and always-on, no-sleep behaviour) requires a paid
+# instance type. Render's free web services sleep on inactivity and have
+# ephemeral disks, which would pause monitoring and reset the database — so use
+# at least the "starter" plan here.
+services:
+  - type: web
+    name: beakon
+    runtime: docker
+    plan: starter
+    healthCheckPath: /healthz
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 3000
+      - key: DB_PATH
+        value: /data/beakon.db
+      - key: SESSION_SECRET
+        generateValue: true
+      - key: BASE_URL
+        sync: false
+      - key: STRIPE_SECRET_KEY
+        sync: false
+      - key: STRIPE_WEBHOOK_SECRET
+        sync: false
+      - key: STRIPE_PRICE_STARTER
+        sync: false
+      - key: STRIPE_PRICE_AGENCY
+        sync: false
+      - key: SMTP_HOST
+        sync: false
+      - key: SMTP_PORT
+        sync: false
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASS
+        sync: false
+      - key: ALERT_FROM
+        sync: false
+    disk:
+      name: beakon-data
+      mountPath: /data
+      sizeGB: 1
