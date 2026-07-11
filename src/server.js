@@ -219,6 +219,23 @@ app.post('/billing/portal', requireAuth, async (req, res) => {
   }
 });
 
+// TEMP diagnostic — reveals what the RUNNING app actually has (no secrets leaked).
+// Remove after debugging.
+app.get('/debug/stripe', async (req, res) => {
+  const k = process.env.STRIPE_SECRET_KEY || '';
+  const keyMode = k.startsWith('sk_live') ? 'live' : k.startsWith('sk_test') ? 'test' : (k ? 'unknown' : 'UNSET');
+  const priceStarter = process.env.STRIPE_PRICE_STARTER || null;
+  const priceAgency = process.env.STRIPE_PRICE_AGENCY || null;
+  let priceCheck;
+  try {
+    const p = await stripe.prices.retrieve(priceStarter);
+    priceCheck = { ok: true, id: p.id, livemode: p.livemode, amount: p.unit_amount };
+  } catch (e) {
+    priceCheck = { ok: false, error: e.message };
+  }
+  res.json({ keyMode, keyLast4: k.slice(-4), priceStarter, priceAgency, priceCheck });
+});
+
 // Safety net: log unexpected async errors instead of letting them crash the app.
 process.on('unhandledRejection', (err) => console.error('[unhandledRejection]', err));
 process.on('uncaughtException', (err) => console.error('[uncaughtException]', err));
