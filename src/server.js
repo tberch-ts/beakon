@@ -165,39 +165,63 @@ app.post('/app/settings', requireAuth, (req, res) => {
 // ---- Billing ----
 app.get('/billing', requireAuth, (req, res) => res.send(billingPage(req.user)));
 
+// Return a valid Stripe customer id for this user. If the saved id no longer
+// exists in the current Stripe account/mode (e.g. the key changed), transparently
+// create a fresh customer and persist it — so a stale id never breaks checkout.
+async function ensureStripeCustomer(user) {
+  if (user.stripe_customer_id) {
+    try {
+      const existing = await stripe.customers.retrieve(user.stripe_customer_id);
+      if (existing && !existing.deleted) return user.stripe_customer_id;
+    } catch (err) {
+      console.warn(`[stripe] stale customer ${user.stripe_customer_id} for user ${user.id}; recreating`);
+    }
+  }
+  const customer = await stripe.customers.create({ email: user.email, metadata: { user_id: String(user.id) } });
+  db.prepare('UPDATE users SET stripe_customer_id = ? WHERE id = ?').run(customer.id, user.id);
+  return customer.id;
+}
+
 app.post('/billing/checkout', requireAuth, async (req, res) => {
   if (!stripe) return res.status(400).send('Stripe not configured.');
-  const planKey = req.body.plan;
-  const plan = PLANS[planKey];
+  const plan = PLANS[req.body.plan];
   if (!plan || !plan.priceId) return res.status(400).send('Unknown or unconfigured plan.');
-
-  let customerId = req.user.stripe_customer_id;
-  if (!customerId) {
-    const customer = await stripe.customers.create({ email: req.user.email, metadata: { user_id: String(req.user.id) } });
-    customerId = customer.id;
-    db.prepare('UPDATE users SET stripe_customer_id = ? WHERE id = ?').run(customerId, req.user.id);
+  try {
+    const customerId = await ensureStripeCustomer(req.user);
+    const checkout = await stripe.checkout.sessions.create({
+      mode: 'subscription',
+      customer: customerId,
+      client_reference_id: String(req.user.id),
+      line_items: [{ price: plan.priceId, quantity: 1 }],
+      success_url: `${BASE_URL}/billing?success=1`,
+      cancel_url: `${BASE_URL}/billing?canceled=1`,
+      metadata: { user_id: String(req.user.id) },
+    });
+    res.redirect(303, checkout.url);
+  } catch (err) {
+    console.error('[stripe] checkout failed:', err.message);
+    res.status(400).send(`Could not start checkout: ${err.message}`);
   }
-
-  const checkout = await stripe.checkout.sessions.create({
-    mode: 'subscription',
-    customer: customerId,
-    client_reference_id: String(req.user.id),
-    line_items: [{ price: plan.priceId, quantity: 1 }],
-    success_url: `${BASE_URL}/billing?success=1`,
-    cancel_url: `${BASE_URL}/billing?canceled=1`,
-    metadata: { user_id: String(req.user.id) },
-  });
-  res.redirect(303, checkout.url);
 });
 
 app.post('/billing/portal', requireAuth, async (req, res) => {
-  if (!stripe || !req.user.stripe_customer_id) return res.redirect('/billing');
-  const portal = await stripe.billingPortal.sessions.create({
-    customer: req.user.stripe_customer_id,
-    return_url: `${BASE_URL}/billing`,
-  });
-  res.redirect(303, portal.url);
+  if (!stripe) return res.redirect('/billing');
+  try {
+    const customerId = await ensureStripeCustomer(req.user);
+    const portal = await stripe.billingPortal.sessions.create({
+      customer: customerId,
+      return_url: `${BASE_URL}/billing`,
+    });
+    res.redirect(303, portal.url);
+  } catch (err) {
+    console.error('[stripe] portal failed:', err.message);
+    res.redirect('/billing');
+  }
 });
+
+// Safety net: log unexpected async errors instead of letting them crash the app.
+process.on('unhandledRejection', (err) => console.error('[unhandledRejection]', err));
+process.on('uncaughtException', (err) => console.error('[uncaughtException]', err));
 
 app.listen(PORT, () => {
   console.log(`[beakon] listening on ${BASE_URL} (port ${PORT})`);
