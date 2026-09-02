@@ -19,10 +19,10 @@ export function normalizeUrl(input) {
 }
 
 /**
- * Perform an HTTP(S) uptime check.
+ * Perform an HTTP(S) uptime check, optionally requiring a keyword in the body.
  * Returns { up, status, responseMs, error }.
  */
-export async function httpCheck(url) {
+export async function httpCheck(url, { keyword = null } = {}) {
   const started = Date.now();
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), HTTP_TIMEOUT_MS);
@@ -33,15 +33,19 @@ export async function httpCheck(url) {
       signal: controller.signal,
       headers: { 'User-Agent': 'BeakonMonitor/1.0 (+https://beakon.app)' },
     });
-    const responseMs = Date.now() - started;
     // 2xx and 3xx are considered "up". 4xx/5xx are "down".
-    const up = res.status >= 200 && res.status < 400;
-    return {
-      up,
-      status: res.status,
-      responseMs,
-      error: up ? null : `HTTP ${res.status}`,
-    };
+    let up = res.status >= 200 && res.status < 400;
+    let error = up ? null : `HTTP ${res.status}`;
+    // Keyword monitors also require the body to contain the phrase.
+    if (up && keyword) {
+      const body = await res.text().catch(() => '');
+      if (!body.toLowerCase().includes(String(keyword).toLowerCase())) {
+        up = false;
+        error = `keyword "${keyword}" not found`;
+      }
+    }
+    const responseMs = Date.now() - started;
+    return { up, status: res.status, responseMs, error };
   } catch (err) {
     return {
       up: false,
