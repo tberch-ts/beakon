@@ -23,6 +23,33 @@
 | `src/mailer.js` | SMTP alerts via nodemailer (logs to console if SMTP unset) |
 | `public/landing.html` | Marketing landing page served at `/` |
 
+### Admin console, clients, Uptime Kuma, Google sign-in
+
+Beakon is the client-facing admin layer over **Uptime Kuma** (optional engine)
+and is wired to **marketingCRM**: see [UPTIME-KUMA.md](UPTIME-KUMA.md).
+
+- `/admin` — every client, every monitor, alert routing, who may sign in, and
+  monitors that exist only in Kuma (importable).
+- **Clients** roll several sites into one: one alert address, one alert type
+  (Disabled / Email / any Uptime Kuma channel), one alerts on/off switch, plus
+  per-monitor enable/disable.
+- Monitors added by an admin or by CRM onboarding are **free** to the customer;
+  only monitors a customer adds count against their plan.
+- A new alert address gets one confirmation email; nothing is sent until it is
+  clicked. A blank address means alerts are off, quietly.
+- Sign-in is Google via the CRM's Firebase project (`marketingcrm-c5d57`); the
+  CRM's `admin` claim makes an admin here too. `POST /api/crm/clients` is how
+  the CRM creates clients and monitors at onboarding.
+
+| Additional files | What they do |
+|---|---|
+| `src/kuma.js` | Uptime Kuma Socket.IO client + monitor spec builder |
+| `src/engine.js` | check results → transitions, alerts, CRM signals |
+| `src/monitors.js`, `src/clients.js` | monitor / client model, Kuma mirroring, alert-email confirmation |
+| `src/auth.js` | Firebase ID-token verification, admin rule |
+| `src/crm.js` | outbound signals, inbound onboarding webhook |
+| `infra/kuma/fly.toml` | Uptime Kuma on Fly (private network) |
+
 **No native build required.** `better-sqlite3` is an *optional* dependency. If it builds, Beakon uses it; if not, it falls back to the SQLite engine built into Node 18.5+/20/22. Either way it just works.
 
 ---

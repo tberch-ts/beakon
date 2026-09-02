@@ -1,5 +1,7 @@
 // src/server.js
-// Express app: auth, dashboard, monitor CRUD, Stripe billing + webhook.
+// Express app: auth (Google via Firebase, plus legacy password), customer
+// dashboard, admin console, alert-email verification, Stripe billing + webhook,
+// and the CRM onboarding webhook.
 import 'dotenv/config';
 import express from 'express';
 import session from 'express-session';
@@ -11,9 +13,24 @@ import Stripe from 'stripe';
 
 import { db, now } from './db.js';
 import { startScheduler } from './monitor.js';
-import { normalizeUrl } from './checks.js';
-import { PLANS, planForPriceId, monitorLimit, isAccountActive } from './plans.js';
-import { loginPage, signupPage, dashboard, billingPage } from './views.js';
+import { PLANS, planForPriceId, monitorLimit } from './plans.js';
+import {
+  firebaseWebConfig, isFirebaseEnabled, isLegacyPasswordLoginEnabled, verifyIdToken,
+  findOrCreateUserFromFirebase, linkClientGrants, isAdminUser, getSessionUser, requireAuth, requireAdmin,
+} from './auth.js';
+import {
+  getClient, listClients, listClientsForUser, userCanAccess, ensurePersonalClient, createClient, updateClient,
+  grantAccess, revokeAccess, listClientUsers, updateAlertSettings, resendVerification, verifyAlertToken, deleteClient,
+} from './clients.js';
+import {
+  getMonitor, listMonitorsForClient, listAllMonitors, countBillableMonitors, recentEvents, createMonitor,
+  setMonitorActive, deleteMonitor, assignMonitorToClient, syncClientMonitorsToKuma, unlinkedKumaMonitors, importKumaMonitor,
+} from './monitors.js';
+import { kuma, isKumaEnabled, availableMonitorTypes } from './kuma.js';
+import { isMailConfigured } from './mailer.js';
+import { crmWebhookAuth, upsertClientFromCrm, clientStatusForCrm, isCrmSignalConfigured, isCrmWebhookConfigured } from './crm.js';
+import { loginPage, signupPage, dashboard, adminPage, billingPage, verifyPage } from './views.js';
+import { getClientBySlug } from './clients.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -80,26 +97,41 @@ app.use(session({
 // Serve the marketing landing page assets.
 app.use('/static', express.static(path.join(__dirname, '..', 'public')));
 
-function getUser(req) {
-  if (!req.session.userId) return null;
-  return db.prepare('SELECT * FROM users WHERE id = ?').get(req.session.userId) || null;
-}
-function requireAuth(req, res, next) {
-  const user = getUser(req);
-  if (!user) return res.redirect('/login');
-  req.user = user;
-  next();
-}
+// One-shot messages across a redirect.
+function flash(req, msg, kind = 'ok') { req.session.flash = { msg, kind }; }
+function takeFlash(req) { const f = req.session.flash; delete req.session.flash; return f || null; }
 
 // ---- Root ----
-// The public marketing landing lives on GitHub Pages; this backend host serves
-// the actual app, so send the root straight to the dashboard/login.
 app.get('/', (req, res) => res.redirect(req.session.userId ? '/app' : '/login'));
-app.get('/healthz', (req, res) => res.json({ ok: true }));
+app.get('/healthz', (req, res) => res.json({
+  ok: true,
+  kuma: isKumaEnabled() ? (kuma?.isReady() ? 'connected' : 'disconnected') : 'disabled',
+}));
 
 // ---- Auth ----
-app.get('/signup', (req, res) => res.send(signupPage()));
+const authOpts = () => ({ firebaseConfig: isFirebaseEnabled() ? firebaseWebConfig() : null, legacy: isLegacyPasswordLoginEnabled() });
+
+app.get('/login', (req, res) => res.send(loginPage({ ...authOpts(), error: req.query.error })));
+
+// Browser signed in with Firebase (Google); exchange the ID token for a session.
+app.post('/auth/firebase', async (req, res) => {
+  try {
+    const decoded = await verifyIdToken(String(req.body.idToken || ''));
+    const user = findOrCreateUserFromFirebase(decoded);
+    req.session.userId = user.id;
+    res.json({ ok: true, redirect: isAdminUser(user) ? '/admin' : '/app' });
+  } catch (err) {
+    console.warn('[auth] firebase sign-in failed:', err.message);
+    res.status(401).json({ ok: false, error: err.message });
+  }
+});
+
+app.get('/signup', (req, res) => {
+  if (!isLegacyPasswordLoginEnabled()) return res.redirect('/login');
+  res.send(signupPage());
+});
 app.post('/signup', async (req, res) => {
+  if (!isLegacyPasswordLoginEnabled()) return res.redirect('/login');
   const email = (req.body.email || '').trim().toLowerCase();
   const password = req.body.password || '';
   if (!email || password.length < 8) return res.send(signupPage('Enter a valid email and 8+ char password.'));
@@ -114,52 +146,241 @@ app.post('/signup', async (req, res) => {
   res.redirect('/app');
 });
 
-app.get('/login', (req, res) => res.send(loginPage()));
 app.post('/login', async (req, res) => {
+  if (!isLegacyPasswordLoginEnabled()) return res.redirect('/login');
   const email = (req.body.email || '').trim().toLowerCase();
   const password = req.body.password || '';
   const user = db.prepare('SELECT * FROM users WHERE email = ?').get(email);
-  if (!user || !(await bcrypt.compare(password, user.password_hash))) {
-    return res.send(loginPage('Invalid email or password.'));
+  if (!user || !user.password_hash || !(await bcrypt.compare(password, user.password_hash))) {
+    return res.send(loginPage({ ...authOpts(), error: 'Invalid email or password.' }));
   }
+  linkClientGrants(user);
+  db.prepare('UPDATE users SET last_login_at = ? WHERE id = ?').run(now(), user.id);
   req.session.userId = user.id;
-  res.redirect('/app');
+  res.redirect(isAdminUser(user) ? '/admin' : '/app');
 });
 
 app.post('/logout', (req, res) => req.session.destroy(() => res.redirect('/login')));
 app.get('/logout', (req, res) => req.session.destroy(() => res.redirect('/login')));
 
-// ---- Dashboard ----
+// ---- Alert email verification (public link from the email) ----
+app.get('/alerts/verify', (req, res) => {
+  const client = verifyAlertToken(String(req.query.token || ''));
+  if (client) syncClientMonitorsToKuma(client.id).catch(() => {});
+  res.send(verifyPage(Boolean(client), client));
+});
+
+// ---- Customer dashboard ----
+function pickClient(req) {
+  const clients = listClientsForUser(req.user, req.isAdmin);
+  if (!clients.length && !req.isAdmin) clients.push(ensurePersonalClient(req.user));
+  const wanted = parseInt(req.query.client || req.session.lastClientId || '0', 10);
+  const client = clients.find((c) => c.id === wanted) || clients[0] || null;
+  if (client) req.session.lastClientId = client.id;
+  return { clients, client };
+}
+
 app.get('/app', requireAuth, (req, res) => {
-  const monitors = db.prepare('SELECT * FROM monitors WHERE user_id = ? ORDER BY created_at DESC').all(req.user.id);
-  res.send(dashboard(req.user, monitors));
+  const { clients, client } = pickClient(req);
+  const monitors = client ? listMonitorsForClient(client.id) : [];
+  res.send(dashboard({
+    user: req.user, isAdmin: req.isAdmin, clients, client, monitors,
+    monitorTypes: availableMonitorTypes(),
+    used: countBillableMonitors(req.user.id), limit: monitorLimit(req.user),
+    events: client ? recentEvents(15, client.id) : [],
+    kumaChannels: req.isAdmin && kuma?.isReady() ? kuma.listNotifications() : [],
+    flash: takeFlash(req), mailConfigured: isMailConfigured(),
+  }));
 });
 
-app.post('/app/monitors', requireAuth, (req, res) => {
-  const count = db.prepare('SELECT COUNT(*) c FROM monitors WHERE user_id = ?').get(req.user.id).c;
-  if (count >= monitorLimit(req.user)) return res.redirect('/billing');
-  let url;
+function requireClientAccess(req, res, clientId) {
+  const id = parseInt(clientId, 10);
+  if (!id || !userCanAccess(req.user, req.isAdmin, id)) { res.status(403).send('Not your client.'); return null; }
+  return getClient(id);
+}
+
+app.post('/app/monitors', requireAuth, async (req, res) => {
+  const client = requireClientAccess(req, res, req.body.client_id);
+  if (!client) return;
+  const source = req.isAdmin ? 'admin' : 'user';
+  if (source === 'user' && countBillableMonitors(req.user.id) >= monitorLimit(req.user)) return res.redirect('/billing');
   try {
-    url = normalizeUrl(req.body.url);
-  } catch {
-    return res.redirect('/app');
+    await createMonitor({
+      clientId: client.id, userId: req.user.id, name: req.body.name, url: req.body.url, type: req.body.type,
+      keyword: req.body.keyword, hostname: req.body.hostname, port: req.body.port, source,
+    });
+    flash(req, 'Monitor added.');
+  } catch (err) {
+    flash(req, `Could not add monitor: ${err.message}`, 'err');
   }
-  const name = (req.body.name || url).trim().slice(0, 120);
-  db.prepare('INSERT INTO monitors (user_id, name, url, active, created_at) VALUES (?, ?, ?, 1, ?)')
-    .run(req.user.id, name, url, now());
-  res.redirect('/app');
+  res.redirect(`/app?client=${client.id}`);
 });
 
-app.post('/app/monitors/:id/delete', requireAuth, (req, res) => {
-  db.prepare('DELETE FROM monitors WHERE id = ? AND user_id = ?').run(req.params.id, req.user.id);
-  db.prepare('DELETE FROM events WHERE monitor_id = ?').run(req.params.id);
-  res.redirect('/app');
+function ownedMonitor(req, res) {
+  const m = getMonitor(parseInt(req.params.id, 10));
+  if (!m || !userCanAccess(req.user, req.isAdmin, m.client_id)) { res.status(404).send('Not found.'); return null; }
+  return m;
+}
+
+app.post('/app/monitors/:id/toggle', requireAuth, async (req, res) => {
+  const m = ownedMonitor(req, res);
+  if (!m) return;
+  await setMonitorActive(m.id, !m.active);
+  res.redirect(req.body.back || `/app?client=${m.client_id}`);
 });
 
-app.post('/app/settings', requireAuth, (req, res) => {
-  const alertEmail = (req.body.alert_email || '').trim().toLowerCase();
-  if (alertEmail) db.prepare('UPDATE users SET alert_email = ? WHERE id = ?').run(alertEmail, req.user.id);
-  res.redirect('/app');
+app.post('/app/monitors/:id/delete', requireAuth, async (req, res) => {
+  const m = ownedMonitor(req, res);
+  if (!m) return;
+  // Customers can only remove what they added; admin/CRM monitors are managed by us.
+  if (!req.isAdmin && m.source !== 'user') { flash(req, 'That monitor is managed by your provider.', 'err'); return res.redirect(`/app?client=${m.client_id}`); }
+  await deleteMonitor(m.id);
+  res.redirect(req.body.back || `/app?client=${m.client_id}`);
+});
+
+app.post('/app/clients/:id/alerts', requireAuth, async (req, res) => {
+  const client = requireClientAccess(req, res, req.params.id);
+  if (!client) return;
+  let channel = String(req.body.alert_channel || 'email');
+  if (channel.startsWith('kuma:') && !req.isAdmin) channel = 'email';
+  try {
+    const r = await updateAlertSettings(client, {
+      alertEmail: req.body.alert_email, alertChannel: channel, alertsEnabled: req.body.alerts_enabled ? 1 : 0,
+      markVerified: req.isAdmin && Boolean(req.body.mark_verified),
+    }, { baseUrl: BASE_URL });
+    await syncClientMonitorsToKuma(client.id);
+    if (r.verificationSent) flash(req, `Alert settings saved. We emailed ${r.client.alert_email} — click the link there to confirm it.`);
+    else if (r.verificationPending) flash(req, 'Alert settings saved. That address still needs to be confirmed before alerts are sent.', 'warn');
+    else flash(req, 'Alert settings saved.');
+  } catch (err) {
+    flash(req, err.message, 'err');
+  }
+  res.redirect(req.body.back || `/app?client=${client.id}`);
+});
+
+app.post('/app/clients/:id/alerts/resend', requireAuth, async (req, res) => {
+  const client = requireClientAccess(req, res, req.params.id);
+  if (!client) return;
+  const sent = await resendVerification(client, { baseUrl: BASE_URL });
+  flash(req, sent ? `Verification email sent to ${client.alert_email}.` : 'Nothing to send.', sent ? 'ok' : 'warn');
+  res.redirect(req.body.back || `/app?client=${client.id}`);
+});
+
+// ---- Admin console: every client, every monitor ----
+app.get('/admin', requireAdmin, (req, res) => {
+  const clients = listClients();
+  const monitors = listAllMonitors();
+  const byClient = new Map();
+  for (const m of monitors) {
+    if (!byClient.has(m.client_id)) byClient.set(m.client_id, []);
+    byClient.get(m.client_id).push(m);
+  }
+  res.send(adminPage({
+    user: req.user,
+    clients: clients.map((c) => ({ ...c, monitors: byClient.get(c.id) || [], users: listClientUsers(c.id) })),
+    orphanMonitors: byClient.get(null) || [],
+    monitorTypes: availableMonitorTypes(),
+    kuma: {
+      enabled: isKumaEnabled(), connected: Boolean(kuma?.isReady()), url: process.env.KUMA_URL || '', lastError: kuma?.lastError || null,
+      channels: kuma?.isReady() ? kuma.listNotifications() : [], unlinked: unlinkedKumaMonitors(),
+    },
+    integrations: { mail: isMailConfigured(), crmSignals: isCrmSignalConfigured(), crmWebhook: isCrmWebhookConfigured(), firebase: isFirebaseEnabled() },
+    events: recentEvents(40),
+    flash: takeFlash(req),
+  }));
+});
+
+app.post('/admin/clients', requireAdmin, (req, res) => {
+  try {
+    const client = createClient({ name: req.body.name, slug: req.body.slug, domain: req.body.domain || null, source: 'admin' });
+    if (req.body.owner_email) grantAccess(client.id, req.body.owner_email);
+    flash(req, `Client "${client.name}" created.`);
+  } catch (err) {
+    flash(req, `Could not create client: ${err.message}`, 'err');
+  }
+  res.redirect('/admin');
+});
+
+app.post('/admin/clients/:id/update', requireAdmin, (req, res) => {
+  updateClient(parseInt(req.params.id, 10), { name: req.body.name, domain: req.body.domain || null });
+  res.redirect('/admin');
+});
+
+app.post('/admin/clients/:id/delete', requireAdmin, async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  for (const m of listMonitorsForClient(id)) await deleteMonitor(m.id);
+  deleteClient(id);
+  flash(req, 'Client and its monitors deleted.');
+  res.redirect('/admin');
+});
+
+app.post('/admin/clients/:id/users', requireAdmin, (req, res) => {
+  try { grantAccess(parseInt(req.params.id, 10), req.body.email); flash(req, `Access granted to ${String(req.body.email).toLowerCase()}.`); }
+  catch (err) { flash(req, err.message, 'err'); }
+  res.redirect('/admin');
+});
+
+app.post('/admin/clients/:id/users/remove', requireAdmin, (req, res) => {
+  revokeAccess(parseInt(req.params.id, 10), req.body.email);
+  res.redirect('/admin');
+});
+
+app.post('/admin/monitors', requireAdmin, async (req, res) => {
+  try {
+    if (!getClient(parseInt(req.body.client_id, 10))) throw new Error('pick a client');
+    await createMonitor({
+      clientId: parseInt(req.body.client_id, 10), userId: req.user.id, name: req.body.name, url: req.body.url, type: req.body.type,
+      keyword: req.body.keyword, hostname: req.body.hostname, port: req.body.port, source: 'admin',
+    });
+    flash(req, 'Monitor added (not billed to the client).');
+  } catch (err) {
+    flash(req, `Could not add monitor: ${err.message}`, 'err');
+  }
+  res.redirect('/admin');
+});
+
+app.post('/admin/monitors/:id/assign', requireAdmin, async (req, res) => {
+  try { await assignMonitorToClient(parseInt(req.params.id, 10), parseInt(req.body.client_id, 10)); flash(req, 'Monitor moved.'); }
+  catch (err) { flash(req, err.message, 'err'); }
+  res.redirect('/admin');
+});
+
+app.post('/admin/monitors/:id/billable', requireAdmin, (req, res) => {
+  const m = getMonitor(parseInt(req.params.id, 10));
+  if (m) db.prepare('UPDATE monitors SET billable = ? WHERE id = ?').run(m.billable ? 0 : 1, m.id);
+  res.redirect('/admin');
+});
+
+app.post('/admin/kuma/import', requireAdmin, async (req, res) => {
+  try {
+    await importKumaMonitor(parseInt(req.body.kuma_id, 10), parseInt(req.body.client_id, 10), req.user.id);
+    flash(req, 'Kuma monitor imported.');
+  } catch (err) {
+    flash(req, `Import failed: ${err.message}`, 'err');
+  }
+  res.redirect('/admin');
+});
+
+// ---- CRM webhook: onboarding creates the client + monitors here ----
+app.post('/api/crm/clients', crmWebhookAuth, async (req, res) => {
+  try {
+    const result = await upsertClientFromCrm(req.body || {}, { baseUrl: BASE_URL });
+    res.status(result.created ? 201 : 200).json({
+      ok: true, created: result.created,
+      client: { id: result.client.id, slug: result.client.slug, name: result.client.name },
+      owners: result.owners, verificationSent: result.verificationSent, monitors: result.monitors, monitorCount: result.monitorCount,
+      dashboardUrl: `${BASE_URL}/app?client=${result.client.id}`,
+    });
+  } catch (err) {
+    console.error('[crm] upsert failed:', err.message);
+    res.status(400).json({ ok: false, error: err.message });
+  }
+});
+
+app.get('/api/crm/clients/:slug', crmWebhookAuth, (req, res) => {
+  const client = getClientBySlug(String(req.params.slug).toLowerCase());
+  if (!client) return res.status(404).json({ ok: false, error: 'not_found' });
+  res.json({ ok: true, ...clientStatusForCrm(client) });
 });
 
 // ---- Billing ----

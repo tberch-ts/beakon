@@ -1,0 +1,47 @@
+# Uptime Kuma on Fly.io — the monitoring engine behind Beakon.
+#
+# One machine, one volume, private network only. Beakon reaches it over Fly's
+# 6PN at http://beakon-kuma.internal:3001; nothing is exposed publicly unless
+# you add an [http_service]. To use Kuma's own UI, tunnel in:
+#
+#   fly proxy 3001:3001 -a beakon-kuma      # then open http://localhost:3001
+#
+# First-time setup:
+#   fly apps create beakon-kuma
+#   fly volumes create kuma_data --region ams --size 1 -a beakon-kuma
+#   fly deploy -c infra/kuma/fly.toml -a beakon-kuma
+#   fly proxy 3001:3001 -a beakon-kuma      # create the admin user in the UI once
+#
+# Then give Beakon that user's credentials:
+#   fly secrets set KUMA_URL=http://beakon-kuma.internal:3001 KUMA_USERNAME=beakon KUMA_PASSWORD=... -a beakon
+#
+# Keep it to ONE machine: Kuma is SQLite-backed and stateful; two machines would
+# each run every check and hold half the history.
+
+app = 'beakon-kuma'
+primary_region = 'ams'
+
+[build]
+  image = 'louislam/uptime-kuma:1'
+
+[env]
+  # Beakon reads state over the socket API; a public base URL is only needed
+  # for links inside Kuma's own notifications.
+  UPTIME_KUMA_PORT = '3001'
+
+[[mounts]]
+  source = 'kuma_data'
+  destination = '/app/data'
+
+# Private-only. Fly's internal DNS resolves beakon-kuma.internal to this
+# machine for any app in the same organisation, which is how Beakon connects.
+[[services]]
+  internal_port = 3001
+  protocol = 'tcp'
+  auto_stop_machines = 'off'
+  auto_start_machines = false
+  min_machines_running = 1
+
+[[vm]]
+  size = 'shared-cpu-1x'
+  memory = '512mb'
