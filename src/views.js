@@ -1,6 +1,6 @@
 // src/views.js
 // Minimal server-rendered HTML. No template engine dependency — just functions.
-import { PLANS, trialDaysLeft, isAccountActive } from './plans.js';
+// Every page here is for a CRM admin; customers never see Beakon.
 import { effectiveAlertMode } from './clients.js';
 import { RUNGS, CHECKS, ATTESTATIONS, MAX_RUNG } from './searchLadder.js';
 
@@ -99,21 +99,13 @@ ${opts.script || ''}
 const flashHtml = (f) => (f ? `<div class="banner ${esc(f.kind || 'ok')}">${esc(f.msg)}</div>` : '');
 
 // ---------- Auth ----------
-export function loginPage({ error, firebaseConfig, legacy }) {
+export function loginPage({ error, firebaseConfig }) {
   const google = firebaseConfig ? `
     <button class="gbtn" id="google">
       <svg width="18" height="18" viewBox="0 0 48 48"><path fill="#EA4335" d="M24 9.5c3.5 0 6.6 1.2 9 3.5l6.7-6.7C35.6 2.5 30.2 0 24 0 14.6 0 6.5 5.4 2.6 13.3l7.8 6C12.3 13.6 17.7 9.5 24 9.5z"/><path fill="#4285F4" d="M46.5 24.5c0-1.6-.1-3.1-.4-4.5H24v9h12.7c-.6 3-2.3 5.5-4.8 7.2l7.5 5.8c4.4-4 7.1-10 7.1-17.5z"/><path fill="#FBBC05" d="M10.4 28.7c-.5-1.5-.8-3-.8-4.7s.3-3.2.8-4.7l-7.8-6C.9 16.5 0 20.1 0 24s.9 7.5 2.6 10.7l7.8-6z"/><path fill="#34A853" d="M24 48c6.2 0 11.6-2 15.4-5.6l-7.5-5.8c-2.1 1.4-4.8 2.3-7.9 2.3-6.3 0-11.7-4.1-13.6-9.8l-7.8 6C6.5 42.6 14.6 48 24 48z"/></svg>
       Continue with Google
     </button>
     <div class="err hide" id="gerr"></div>` : '';
-  const legacyForm = legacy ? `
-    ${firebaseConfig ? '<p class="muted small" style="margin:18px 0 0;text-align:center">or sign in with a password</p>' : ''}
-    <form method="post" action="/login">
-      <label>Email</label><input name="email" type="email" required>
-      <label>Password</label><input name="password" type="password" required>
-      <div style="margin-top:16px;"><button type="submit" class="${firebaseConfig ? 'secondary' : ''}">Sign in</button></div>
-    </form>
-    <p class="muted" style="margin-top:14px;">No account? <a href="/signup">Start your free trial</a></p>` : '';
   const script = firebaseConfig ? `
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js";
@@ -128,43 +120,35 @@ btn.onclick = async () => {
     const res = await fetch('/auth/firebase', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ idToken }) });
     const data = await res.json();
     if (!res.ok || !data.ok) throw new Error(data.error || 'Sign-in failed');
-    location.href = data.redirect || '/app';
+    location.href = data.redirect || '/admin';
   } catch (e) { err.textContent = e.message.replace('Firebase: ', ''); err.classList.remove('hide'); btn.disabled = false; }
 };
 </script>` : '';
   return layout('Sign in', `
     <div class="card" style="max-width:420px;margin:40px auto;">
       <h1>Sign in</h1>
-      <p class="muted">${firebaseConfig ? 'Use the Google account your sites are registered to.' : 'Welcome back.'}</p>
+      <p class="muted">Beakon is the operator console. Sign in with the Google account that is an admin in the marketing CRM.</p>
       ${error ? `<div class="err">${esc(error)}</div>` : ''}
       ${google}
-      ${legacyForm}
-      ${!google && !legacy ? '<p class="err">Sign-in is not configured. Set the FIREBASE_* variables.</p>' : ''}
+      ${!google ? '<p class="err">Sign-in is not configured. Set the FIREBASE_* variables to the CRM project&#39;s values.</p>' : ''}
     </div>`, { script });
 }
 
-export function signupPage(error) {
-  return layout('Start free trial', `
-    <div class="card" style="max-width:420px;margin:40px auto;">
-      <h1>Start your free trial</h1>
-      <p class="muted">${esc(process.env.TRIAL_DAYS || '14')} days free. No card required.</p>
-      ${error ? `<div class="err">${esc(error)}</div>` : ''}
-      <form method="post" action="/signup">
-        <label>Email</label><input name="email" type="email" required>
-        <label>Password</label><input name="password" type="password" minlength="8" required>
-        <div style="margin-top:16px;"><button type="submit">Create account</button></div>
-      </form>
-      <p class="muted" style="margin-top:14px;">Already have an account? <a href="/login">Sign in</a></p>
+export function forbiddenPage(user) {
+  return layout('Not an admin', `
+    <div class="card" style="max-width:480px;margin:40px auto;">
+      <h1>This is the operator console</h1>
+      <p class="muted">You are signed in as <strong>${esc(user.email)}</strong>, which is not an admin in the marketing CRM. Beakon has nothing for customers to see — your site's status page is in Uptime Kuma, and your account manager can send you the link.</p>
+      <p style="margin-top:16px"><a class="btn secondary" href="/logout">Sign out</a></p>
     </div>`);
 }
 
 export function verifyPage(ok, client) {
-  return layout('Alert email', `
+  return layout(ok ? 'Alerts confirmed' : 'Link expired', `
     <div class="card" style="max-width:480px;margin:40px auto;">
       ${ok
-        ? `<h1>✓ Confirmed</h1><p>Alerts for <strong>${esc(client.name)}</strong> will now be sent to <strong>${esc(client.alert_email)}</strong>.</p>`
-        : `<h1>Link expired</h1><p class="muted">That confirmation link is invalid or has expired. Sign in and press "Resend" under alert settings to get a new one.</p>`}
-      <p><a href="/app">Go to dashboard →</a></p>
+        ? `<h1>Alerts confirmed</h1><p class="muted">Down, recovered and SSL-expiry alerts for <strong>${esc(client.name)}</strong> will now be sent to <strong>${esc(client.alert_email)}</strong>.</p>`
+        : `<h1>Link expired</h1><p class="muted">That confirmation link is invalid or has expired. Ask your account manager to resend it.</p>`}
     </div>`);
 }
 
@@ -261,74 +245,9 @@ function eventsTable(events, { showClient = false } = {}) {
   </tbody></table>`;
 }
 
-// ---------- Customer dashboard ----------
-export function dashboard({ user, isAdmin, clients, client, monitors, monitorTypes, used, limit, events, kumaChannels, flash, mailConfigured }) {
-  const nav = `${isAdmin ? '<a href="/admin">Admin</a>' : ''}<a href="/billing">Billing</a><a href="/logout">Sign out</a>`;
-  const atLimit = used >= limit;
-
-  let banner = '';
-  if (!isAdmin && user.subscription_status === 'trialing') {
-    banner = `<div class="banner warn">Free trial — ${trialDaysLeft(user)} day(s) left. <a href="/billing">Upgrade to keep your own monitors running →</a></div>`;
-  } else if (!isAdmin && !isAccountActive(user)) {
-    banner = `<div class="banner warn">Your account is inactive — monitors you added are paused. Monitors set up by your provider keep running. <a href="/billing">Reactivate →</a></div>`;
-  }
-
-  const switcher = clients.length > 1 ? `<p class="tabs">${clients.map((c) => `<a class="${client && c.id === client.id ? 'on' : ''}" href="/app?client=${c.id}">${esc(c.name)}</a>`).join('')}</p>` : '';
-
-  if (!client) {
-    return layout('Dashboard', `${flashHtml(flash)}<h1>Monitors</h1><div class="card"><p class="muted">No clients yet. ${isAdmin ? '<a href="/admin">Create one in the admin console →</a>' : ''}</p></div>`, { nav });
-  }
-
-  const back = `/app?client=${client.id}`;
-  const rows = monitors.map((m) => `
-    <tr>
-      <td><strong>${esc(m.name)}</strong> <span class="pill info">${typeLabel[m.type] || m.type}</span>${m.source !== 'user' ? ' <span class="pill unknown" title="Set up by your provider — not billed to you">INCLUDED</span>' : ''}<br><span class="muted small">${esc(target(m))}</span></td>
-      <td>${statusPill(m)}${m.last_error && m.last_status === 'down' ? `<br><span class="muted small">${esc(m.last_error)}</span>` : ''}</td>
-      <td>${m.last_response_ms != null ? m.last_response_ms + ' ms' : '<span class="muted">—</span>'}</td>
-      <td>${fmtSsl(m.ssl_expires_at)}</td>
-      <td>${fmtTime(m.last_checked_at)}</td>
-      <td style="white-space:nowrap">
-        <form method="post" action="/app/monitors/${m.id}/toggle" class="inline"><input type="hidden" name="back" value="${esc(back)}"><button class="secondary small">${m.active ? 'Disable' : 'Enable'}</button></form>
-        ${m.source === 'user' || isAdmin ? `<form method="post" action="/app/monitors/${m.id}/delete" class="inline" onsubmit="return confirm('Delete this monitor?')"><input type="hidden" name="back" value="${esc(back)}"><button class="danger">Delete</button></form>` : ''}
-      </td>
-    </tr>`).join('');
-
-  return layout('Dashboard', `
-    ${banner}
-    ${flashHtml(flash)}
-    ${switcher}
-    <h1>${esc(client.name)}</h1>
-    <p class="muted">${monitors.length} monitor(s) · ${monitors.filter((m) => m.active && m.last_status === 'down').length} down · ${isAdmin ? 'admin' : `your plan: ${esc(PLANS[user.plan]?.label || user.plan)}, ${used} of ${limit} paid monitors used`}</p>
-
-    <div class="card">
-      ${monitors.length === 0
-        ? `<p class="muted">No monitors yet. Add a site below — Beakon checks it every minute and tells you the moment it goes down or the SSL certificate is about to expire.</p>`
-        : `<table>
-            <thead><tr><th>Site</th><th>Status</th><th>Response</th><th>SSL</th><th>Last check</th><th></th></tr></thead>
-            <tbody>${rows}</tbody>
-          </table>`}
-    </div>
-
-    <div class="card">
-      <h2>Add a monitor</h2>
-      ${!isAdmin && atLimit ? `<div class="err">You've hit your plan limit (${limit}). <a href="/billing">Upgrade →</a></div>` : addMonitorForm({ action: '/app/monitors', monitorTypes, clientId: client.id })}
-    </div>
-
-    <div class="card">
-      <h2>Alerts</h2>
-      ${alertForm(client, { action: `/app/clients/${client.id}/alerts`, back, isAdmin, kumaChannels, mailConfigured })}
-    </div>
-
-    <div class="card">
-      <h2>Recent activity</h2>
-      ${eventsTable(events)}
-    </div>
-  `, { nav, script: addMonitorScript });
-}
-
 // ---------- Admin console ----------
 export function adminPage({ user, clients, orphanMonitors, monitorTypes, kuma, integrations, events, flash }) {
-  const nav = `<a href="/app">Dashboard</a><a href="/logout">Sign out</a>`;
+  const nav = `<a href="/logout">Sign out</a>`;
   const allMonitors = clients.flatMap((c) => c.monitors).concat(orphanMonitors);
   const downCount = allMonitors.filter((m) => m.active && m.last_status === 'down').length;
   const clientOptions = (selected) => clients.map((c) => `<option value="${c.id}" ${c.id === selected ? 'selected' : ''}>${esc(c.name)}</option>`).join('');
@@ -337,20 +256,19 @@ export function adminPage({ user, clients, orphanMonitors, monitorTypes, kuma, i
   const onoff = (v) => (v ? '<span class="pill up">ON</span>' : '<span class="pill off">OFF</span>');
 
   const monitorRows = (ms) => ms.length === 0 ? '<p class="muted">No monitors.</p>' : `
-    <table><thead><tr><th>Site</th><th>Status</th><th>Resp</th><th>SSL</th><th>Last check</th><th>Source</th><th>Kuma</th><th></th></tr></thead><tbody>
+    <table><thead><tr><th>Site</th><th>Status</th><th>Resp</th><th>SSL</th><th>Last check</th><th>Added by</th><th>Kuma</th><th></th></tr></thead><tbody>
     ${ms.map((m) => `<tr>
       <td><strong>${esc(m.name)}</strong> <span class="pill info">${typeLabel[m.type] || m.type}</span><br><span class="muted small">${esc(target(m))}</span></td>
       <td>${statusPill(m)}${m.last_error && m.last_status === 'down' ? `<br><span class="muted small">${esc(m.last_error)}</span>` : ''}</td>
       <td>${m.last_response_ms != null ? m.last_response_ms + ' ms' : '—'}</td>
       <td>${fmtSsl(m.ssl_expires_at)}</td>
       <td>${fmtTime(m.last_checked_at)}</td>
-      <td><span class="pill ${m.billable ? 'warn' : 'unknown'}" title="${m.billable ? 'counts against the owner\'s plan' : 'free to the client'}">${esc(m.source)}${m.billable ? ' · billed' : ' · free'}</span>${m.owner_email ? `<br><span class="muted small">${esc(m.owner_email)}</span>` : ''}</td>
+      <td><span class="pill unknown">${esc(m.source)}</span></td>
       <td class="small">${m.kuma_monitor_id ? `<span class="pill up">#${m.kuma_monitor_id}</span>` : kuma.enabled ? '<span class="pill warn">unsynced</span>' : '<span class="muted">built-in</span>'}</td>
       <td style="white-space:nowrap">
-        <form method="post" action="/app/monitors/${m.id}/toggle" class="inline"><input type="hidden" name="back" value="/admin"><button class="secondary small">${m.active ? 'Disable' : 'Enable'}</button></form>
-        <form method="post" action="/admin/monitors/${m.id}/billable" class="inline"><button class="secondary small" title="Toggle whether this counts against the owner's plan">${m.billable ? 'Make free' : 'Make billed'}</button></form>
+        <form method="post" action="/admin/monitors/${m.id}/toggle" class="inline"><button class="secondary small">${m.active ? 'Disable' : 'Enable'}</button></form>
         <form method="post" action="/admin/monitors/${m.id}/assign" class="inline"><select name="client_id" onchange="this.form.submit()" style="width:auto;padding:5px 8px;font-size:13px"><option value="">Move to…</option>${clientOptions(-1)}</select></form>
-        <form method="post" action="/app/monitors/${m.id}/delete" class="inline" onsubmit="return confirm('Delete this monitor?')"><input type="hidden" name="back" value="/admin"><button class="danger">Delete</button></form>
+        <form method="post" action="/admin/monitors/${m.id}/delete" class="inline" onsubmit="return confirm('Delete this monitor?')"><button class="danger">Delete</button></form>
       </td>
     </tr>`).join('')}
     </tbody></table>`;
@@ -359,27 +277,29 @@ export function adminPage({ user, clients, orphanMonitors, monitorTypes, kuma, i
     <details class="client" ${c.down_count > 0 ? 'open' : ''}>
       <summary>
         <span>${esc(c.name)}</span>
-        <span class="muted small">${esc(c.slug)}${c.domain ? ' · ' + esc(c.domain) : ''} · ${esc(c.source)}${c.crm_client_id ? ' · CRM #' + c.crm_client_id : ''}</span>
+        <span class="muted small">${c.crm_slug ? 'CRM: ' + esc(c.crm_slug) : '<span class="pill warn" title="The CRM cannot find this client until its slug is entered below">NO CRM SLUG</span>'}${c.domain ? ' · ' + esc(c.domain) : ''} · ${esc(c.source)}</span>
         <span class="pill ${c.down_count > 0 ? 'down' : c.monitors.length ? 'up' : 'unknown'}">${c.down_count > 0 ? c.down_count + ' DOWN' : c.monitors.length ? 'ALL UP' : 'NO MONITORS'}</span>
         ${gradePill(c.search)}
-        <span class="muted small">${c.monitors.length} monitor(s) · ${c.users.length} user(s)</span>
+        <span class="muted small">${c.monitors.length} monitor(s)</span>
         <span style="margin-left:auto">${alertStatusLine(c, integrations.mail)}</span>
       </summary>
       <div>
         <h3>Monitors</h3>
         ${monitorRows(c.monitors)}
-        <h3>Add monitor (free to client)</h3>
+        <h3>Add monitor</h3>
         ${addMonitorForm({ action: '/admin/monitors', monitorTypes, clientId: c.id })}
         <h3>Search ladder</h3>
         ${searchSummaryHtml(c)}
         <h3>Alerts</h3>
-        ${alertForm(c, { action: `/app/clients/${c.id}/alerts`, back: '/admin', isAdmin: true, kumaChannels: kuma.channels, mailConfigured: integrations.mail })}
-        <h3>Who can sign in</h3>
-        ${c.users.length ? `<p>${c.users.map((u) => `<span class="pill ${u.user_id ? 'up' : 'unknown'}" title="${u.user_id ? 'has signed in' : 'invited, not yet signed in'}">${esc(u.email)}</span>
-          <form method="post" action="/admin/clients/${c.id}/users/remove" class="inline"><input type="hidden" name="email" value="${esc(u.email)}"><button class="danger small" style="padding:2px 8px">×</button></form> `).join(' ')}</p>` : '<p class="muted small">Nobody yet — the client cannot see this dashboard until an email is granted.</p>'}
-        <form method="post" action="/admin/clients/${c.id}/users"><div class="row"><div><label>Grant access (Google email)</label><input name="email" type="email" required placeholder="owner@example.com"></div><div class="auto"><label>&nbsp;</label><button class="secondary">Grant</button></div></div></form>
+        ${alertForm(c, { action: `/admin/clients/${c.id}/alerts`, back: '/admin', isAdmin: true, kumaChannels: kuma.channels, mailConfigured: integrations.mail })}
         <h3>Client</h3>
-        <form method="post" action="/admin/clients/${c.id}/update"><div class="row"><div><label>Name</label><input name="name" value="${esc(c.name)}"></div><div><label>Domain</label><input name="domain" value="${esc(c.domain || '')}"></div><div class="auto"><label>&nbsp;</label><button class="secondary">Save</button></div></div></form>
+        <form method="post" action="/admin/clients/${c.id}/update"><div class="row">
+          <div><label>Name</label><input name="name" value="${esc(c.name)}"></div>
+          <div><label>CRM slug <span class="muted">(exactly as in the CRM)</span></label><input name="crm_slug" value="${esc(c.crm_slug || '')}" placeholder="joes-barber" pattern="[a-z0-9]+(-[a-z0-9]+)*"></div>
+          <div><label>Primary domain</label><input name="domain" value="${esc(c.domain || '')}" placeholder="joesbarber.com"></div>
+          <div class="auto"><label>&nbsp;</label><button class="secondary">Save</button></div>
+        </div></form>
+        <p class="muted small">The CRM's "Analyze search" and onboarding calls name a client by its CRM slug; without it this client is invisible to the CRM. Beakon's own id: ${esc(c.slug)}${c.crm_client_id ? ' · CRM #' + c.crm_client_id : ''}.</p>
         <form method="post" action="/admin/clients/${c.id}/delete" onsubmit="return confirm('Delete this client and ALL its monitors?')" style="margin-top:10px"><button class="danger">Delete client</button></form>
       </div>
     </details>`).join('');
@@ -387,7 +307,7 @@ export function adminPage({ user, clients, orphanMonitors, monitorTypes, kuma, i
   const unlinked = kuma.unlinked.length ? `
     <div class="card">
       <h2>In Uptime Kuma but not in Beakon (${kuma.unlinked.length})</h2>
-      <p class="muted small">Monitors created directly in Kuma's UI. Import one to attach it to a client; it will be free to the client.</p>
+      <p class="muted small">Monitors created directly in Kuma's UI. Import one to attach it to a client.</p>
       <table><thead><tr><th>Kuma #</th><th>Name</th><th>Type</th><th>Target</th><th></th></tr></thead><tbody>
       ${kuma.unlinked.map((k) => `<tr><td>${k.id}</td><td>${esc(k.name)}</td><td>${esc(k.type)}</td><td class="muted small">${esc(k.url || k.hostname || '')}${k.port ? ':' + k.port : ''}</td>
         <td><form method="post" action="/admin/kuma/import" class="inline"><input type="hidden" name="kuma_id" value="${k.id}"><select name="client_id" style="width:auto;padding:5px 8px;font-size:13px">${clientOptions(-1)}</select> <button class="secondary small">Import</button></form></td></tr>`).join('')}
@@ -405,7 +325,8 @@ export function adminPage({ user, clients, orphanMonitors, monitorTypes, kuma, i
       <div class="stat"><b>${kumaPill}</b><span>Uptime Kuma${kuma.url ? ' · ' + esc(kuma.url) : ''}</span>${kuma.lastError ? `<br><span class="err small">${esc(kuma.lastError)}</span>` : ''}</div>
       <div class="stat"><b>${onoff(integrations.mail)}</b><span>SMTP</span></div>
       <div class="stat"><b>${onoff(integrations.crmSignals)} ${onoff(integrations.crmWebhook)}</b><span>CRM signals · CRM onboarding</span></div>
-      <div class="stat"><b>${onoff(integrations.firebase)}</b><span>Google sign-in</span></div>
+      <div class="stat"><b>${onoff(integrations.firebase)}</b><span>Google sign-in (CRM admins)</span></div>
+      <div class="stat"><b>${onoff(integrations.places)}</b><span>Places lookup</span></div>
     </div>
 
     ${clientCards || '<div class="card"><p class="muted">No clients yet.</p></div>'}
@@ -417,13 +338,12 @@ export function adminPage({ user, clients, orphanMonitors, monitorTypes, kuma, i
       <form method="post" action="/admin/clients">
         <div class="row">
           <div><label>Name</label><input name="name" required placeholder="Joe's Barber"></div>
-          <div><label>Slug (optional)</label><input name="slug" placeholder="joes-barber"></div>
-          <div><label>Domain (optional)</label><input name="domain" placeholder="joesbarber.com"></div>
-          <div><label>Owner email (optional)</label><input name="owner_email" type="email" placeholder="joe@joesbarber.com"></div>
+          <div><label>CRM slug</label><input name="crm_slug" placeholder="joes-barber" pattern="[a-z0-9]+(-[a-z0-9]+)*"></div>
+          <div><label>Primary domain (optional)</label><input name="domain" placeholder="joesbarber.com"></div>
           <div class="auto"><label>&nbsp;</label><button>Create</button></div>
         </div>
       </form>
-      <p class="muted small">Clients onboarded from marketingCRM appear here automatically (source: crm).</p>
+      <p class="muted small">Clients onboarded from marketingCRM appear here automatically (source: crm) with their CRM slug filled in. Create one by hand only for a site the CRM does not know yet, and give it the slug the CRM uses.</p>
     </div>
 
     ${unlinked}
@@ -460,7 +380,7 @@ function searchSummaryHtml(c) {
  * form. `report` is searchReportForCrm(); `site` is the selected site.
  */
 export function searchReportPage({ user, client, report, site, history, flash, placesConfigured }) {
-  const nav = `<a href="/admin">Admin</a><a href="/app">Dashboard</a><a href="/logout">Sign out</a>`;
+  const nav = `<a href="/admin">Admin</a><a href="/logout">Sign out</a>`;
   const back = `/admin/clients/${client.id}/search`;
   if (!site) {
     return layout(`Search — ${client.name}`, `
@@ -538,30 +458,4 @@ export function searchReportPage({ user, client, report, site, history, flash, p
     </form>
     ${hist}
   `, { nav, wide: true });
-}
-
-// ---------- Billing ----------
-export function billingPage(user) {
-  const nav = `<a href="/app">Dashboard</a><a href="/logout">Sign out</a>`;
-  const active = user.subscription_status === 'active';
-  const plans = ['starter', 'agency'].map((key) => {
-    const p = PLANS[key];
-    const current = user.plan === key && active;
-    return `<div class="card">
-      <h2>${esc(p.label)} — ${esc(p.priceLabel)}</h2>
-      <p class="muted">Up to ${p.limit} monitors, 1-minute checks, email + SSL alerts.</p>
-      ${current
-        ? `<span class="pill up">Current plan</span>`
-        : `<form method="post" action="/billing/checkout"><input type="hidden" name="plan" value="${key}"><button ${p.priceId ? '' : 'disabled'} type="submit">${active ? 'Switch to ' + p.label : 'Subscribe'}</button></form>
-           ${p.priceId ? '' : '<p class="err">Price not configured yet (set STRIPE_PRICE_* env vars).</p>'}`}
-    </div>`;
-  }).join('');
-
-  return layout('Billing', `
-    <h1>Billing</h1>
-    <p class="muted">Status: <strong>${esc(user.subscription_status)}</strong>${user.subscription_status === 'trialing' ? ` · ${trialDaysLeft(user)} trial day(s) left` : ''}</p>
-    <p class="muted small">Monitors set up by your provider are included and never count against a plan.</p>
-    ${plans}
-    ${active ? `<form method="post" action="/billing/portal"><button class="btn secondary">Manage / cancel subscription</button></form>` : ''}
-  `, { nav });
 }

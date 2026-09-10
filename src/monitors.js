@@ -1,8 +1,8 @@
 // src/monitors.js
 // Monitor CRUD, and keeping Uptime Kuma in step with it.
 //
-// Beakon's `monitors` table is the source of truth: who owns a monitor, which
-// client it rolls up into, whether it counts against a plan. When Kuma is
+// Beakon's `monitors` table is the source of truth: which client a monitor
+// rolls up into and whether it is switched on. When Kuma is
 // enabled every row is mirrored to a Kuma monitor (kuma_monitor_id); Kuma does
 // the checking and its heartbeats flow back through engine.js. Kuma calls are
 // best-effort — a Kuma outage must never stop someone adding a monitor — and
@@ -11,7 +11,6 @@ import { db, now } from './db.js';
 import { normalizeUrl } from './checks.js';
 import { kuma, isKumaEnabled, toKumaSpec, hostOf } from './kuma.js';
 import { getClient, kumaNotificationIdForClient } from './clients.js';
-import { isAccountActive } from './plans.js';
 
 const VALID_TYPES = new Set(['http', 'keyword', 'ping', 'port', 'dns']);
 
@@ -26,16 +25,11 @@ export function listMonitorsForClient(clientId) {
 /** Admin: everything, with client and owner names attached. */
 export function listAllMonitors() {
   return db.prepare(`
-    SELECT m.*, c.name AS client_name, c.slug AS client_slug, u.email AS owner_email
+    SELECT m.*, c.name AS client_name, c.slug AS client_slug
     FROM monitors m
     LEFT JOIN clients c ON c.id = m.client_id
-    LEFT JOIN users u ON u.id = m.user_id
     ORDER BY c.name COLLATE NOCASE, m.created_at DESC
   `).all();
-}
-
-export function countBillableMonitors(userId) {
-  return db.prepare('SELECT COUNT(*) c FROM monitors WHERE user_id = ? AND billable = 1').get(userId).c;
 }
 
 export function recentEvents(limit = 50, clientId = null) {
@@ -47,11 +41,8 @@ export function recentEvents(limit = 50, clientId = null) {
   return clientId ? db.prepare(sql).all(clientId, limit) : db.prepare(sql).all(limit);
 }
 
-/**
- * Create a monitor. `source` says who added it: 'user' counts against the
- * plan; 'admin' and 'crm' are free to the customer.
- */
-export async function createMonitor({ clientId, userId, name, url, type = 'http', keyword = null, hostname = null, port = null, source = 'user', intervalSeconds = 60 }) {
+/** Create a monitor. `source` records who added it: 'admin' here, 'crm' from onboarding. */
+export async function createMonitor({ clientId, userId, name, url, type = 'http', keyword = null, hostname = null, port = null, source = 'admin', intervalSeconds = 60 }) {
   if (!VALID_TYPES.has(type)) type = 'http';
   const needsUrl = type === 'http' || type === 'keyword';
   let finalUrl;
@@ -62,7 +53,7 @@ export async function createMonitor({ clientId, userId, name, url, type = 'http'
   if (type === 'keyword' && !String(keyword || '').trim()) throw new Error('keyword required');
   if (type === 'port' && !(Number(port) > 0)) throw new Error('port required');
 
-  const billable = source === 'user' ? 1 : 0;
+  const billable = 0; // column kept for old rows; nothing is billed any more
   const finalName = String(name || host).trim().slice(0, 120);
   const info = db.prepare(`
     INSERT INTO monitors (user_id, client_id, name, url, type, keyword, hostname, port, interval_seconds, source, billable, active, created_at)
@@ -123,15 +114,9 @@ function kumaReady() {
   return isKumaEnabled() && kuma && kuma.isReady();
 }
 
-function ownerOf(m) {
-  return m.user_id ? db.prepare('SELECT * FROM users WHERE id = ?').get(m.user_id) : null;
-}
-
-/** Should this monitor be checking right now? Free monitors ignore billing. */
-export function desiredActive(m, owner = ownerOf(m)) {
-  if (!m.active) return false;
-  if (!m.billable) return true;
-  return owner ? isAccountActive(owner) : false;
+/** Should this monitor be checking right now? */
+export function desiredActive(m) {
+  return Boolean(m.active);
 }
 
 /** Create or update the Kuma twin of one monitor. */

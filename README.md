@@ -1,13 +1,16 @@
 # Beakon
 
-**Know before your clients do.** Uptime, response-time, and SSL-expiry monitoring built for agencies and freelancers who manage lots of client websites.
+**Know before your clients do.** The marketing CRM's console for every client
+site: uptime, SSL expiry, and where the site stands in search. Internal tool —
+the only people who sign in are CRM admins, and the only machine that calls it
+is the CRM. Customers get an Uptime Kuma status page, not this.
 
-- 1-minute uptime checks (HTTP/HTTPS)
+- 1-minute uptime checks (HTTP/HTTPS), via Uptime Kuma or the built-in sweeper
 - SSL certificate expiry warnings (default: 14 days out)
-- Email alerts on down / recovered / cert-expiring
-- Multi-site dashboard, per-account monitor limits
-- Stripe subscriptions (Starter $19/mo, Agency $49/mo) with a 14-day free trial
-- Single Node.js process + SQLite. Runs comfortably on the smallest DigitalOcean droplet.
+- Email alerts to the client on down / recovered / cert-expiring (once they confirm the address)
+- The Search Ladder: a 0–10 grade and the next phase of search work, per client
+- No billing, no plans, no limits. Beakon watches and grades what the CRM tells it to.
+- Single Node.js process + SQLite.
 
 ---
 
@@ -15,13 +18,12 @@
 
 | Piece | What it is |
 |---|---|
-| `src/server.js` | Express app: auth, dashboard, monitor CRUD, Stripe checkout + webhook |
+| `src/server.js` | Express app: Google sign-in (CRM admins only), admin console, search ladder, CRM API |
 | `src/monitor.js` | Background scheduler that sweeps active monitors and fires alerts |
 | `src/checks.js` | Pure HTTP + SSL check functions (no side effects, easy to test) |
 | `src/db.js` | SQLite layer. Uses `better-sqlite3` if installed, else Node's built-in `node:sqlite` |
-| `src/plans.js` | Plan limits + account-active logic |
 | `src/mailer.js` | SMTP alerts via nodemailer (logs to console if SMTP unset) |
-| `public/landing.html` | Marketing landing page served at `/` |
+| `public/` | Legacy landing pages, served under `/static` only |
 
 ### Admin console, clients, Uptime Kuma, Google sign-in
 
@@ -32,14 +34,13 @@ and is wired to **marketingCRM**: see [UPTIME-KUMA.md](UPTIME-KUMA.md).
   monitors that exist only in Kuma (importable).
 - **Clients** roll several sites into one: one alert address, one alert type
   (Disabled / Email / any Uptime Kuma channel), one alerts on/off switch, plus
-  per-monitor enable/disable.
-- Monitors added by an admin or by CRM onboarding are **free** to the customer;
-  only monitors a customer adds count against their plan.
+  per-monitor enable/disable. Each client carries the **CRM slug** — the slug
+  exactly as the CRM has it — and that is how the CRM's calls find it.
 - A new alert address gets one confirmation email; nothing is sent until it is
   clicked. A blank address means alerts are off, quietly.
-- Sign-in is Google via the CRM's Firebase project (`marketingcrm-c5d57`); the
-  CRM's `admin` claim makes an admin here too. `POST /api/crm/clients` is how
-  the CRM creates clients and monitors at onboarding.
+- Sign-in is Google via the CRM's Firebase project (`marketingcrm-c5d57`), and
+  **only** the CRM's `admin` claim gets in. `POST /api/crm/clients` is how the
+  CRM creates clients and monitors at onboarding.
 
 ### The Search Ladder
 
@@ -70,7 +71,7 @@ that order, and how we are climbing it on our own site are in
 | `src/kuma.js` | Uptime Kuma Socket.IO client + monitor spec builder |
 | `src/engine.js` | check results → transitions, alerts, CRM signals |
 | `src/monitors.js`, `src/clients.js` | monitor / client model, Kuma mirroring, alert-email confirmation |
-| `src/auth.js` | Firebase ID-token verification, admin rule |
+| `src/auth.js` | Firebase ID-token verification; admin = the CRM's `admin` claim |
 | `src/crm.js` | outbound signals, inbound onboarding webhook |
 | `infra/kuma/fly.toml` | Uptime Kuma on Fly (private network) |
 
@@ -150,23 +151,6 @@ certbot --nginx -d app.yourdomain.com      # free HTTPS, auto-renews
 Point an `A` record for `app.yourdomain.com` at the droplet IP first.
 
 > Because the app sets secure cookies in production, you **must** serve it over HTTPS (the Nginx + certbot step) or logins won't stick.
-
----
-
-## Stripe setup
-
-1. In the Stripe Dashboard, create two **recurring monthly Products/Prices**: Starter ($19) and Agency ($49). Copy each `price_...` ID into `STRIPE_PRICE_STARTER` / `STRIPE_PRICE_AGENCY`.
-2. Copy your secret key into `STRIPE_SECRET_KEY` (use `sk_test_...` while testing).
-3. Create a webhook endpoint pointing at `https://app.yourdomain.com/webhooks/stripe`, subscribed to:
-   - `checkout.session.completed`
-   - `customer.subscription.created`
-   - `customer.subscription.updated`
-   - `customer.subscription.deleted`
-   Copy its signing secret into `STRIPE_WEBHOOK_SECRET`.
-4. Enable the **Billing Customer Portal** in Stripe settings so the "Manage / cancel subscription" button works.
-5. Restart: `pm2 restart beakon`.
-
-To test the money path before launch, use Stripe **test mode** + the Stripe CLI (`stripe listen --forward-to localhost:3000/webhooks/stripe`) and card `4242 4242 4242 4242`.
 
 ---
 

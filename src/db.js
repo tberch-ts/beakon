@@ -52,9 +52,8 @@ CREATE TABLE IF NOT EXISTS users (
 );
 
 -- A client is a business whose sites are monitored together: one alert
--- address, one alert channel, one on/off switch, many monitors. A self-serve
--- user gets a personal client automatically; CRM onboarding creates one per
--- CRM client; admins can create and merge them freely.
+-- address, one alert channel, one on/off switch, many monitors. CRM onboarding
+-- creates one per CRM client; admins can create and merge them freely.
 CREATE TABLE IF NOT EXISTS clients (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   slug TEXT UNIQUE NOT NULL,
@@ -168,6 +167,10 @@ addColumn('monitors', 'down_since', 'INTEGER');
 // Google Business Profile Place ID, when known (from the CRM's NFC card, a
 // Places lookup, or typed in). Rung 1 of the Search Ladder.
 addColumn('clients', 'place_id', 'TEXT');
+// The client's slug AS THE CRM KNOWS IT. Onboarding sets it to the CRM slug;
+// a client created here by hand gets it typed in, and from then on the CRM's
+// calls (/api/crm/clients/:slug/...) find this row.
+addColumn('clients', 'crm_slug', 'TEXT');
 
 db.exec(`
 CREATE UNIQUE INDEX IF NOT EXISTS idx_users_firebase_uid ON users(firebase_uid) WHERE firebase_uid IS NOT NULL;
@@ -176,6 +179,7 @@ CREATE INDEX IF NOT EXISTS idx_monitors_kuma ON monitors(kuma_monitor_id);
 CREATE INDEX IF NOT EXISTS idx_client_users_email ON client_users(email);
 CREATE INDEX IF NOT EXISTS idx_events_created ON events(created_at);
 CREATE INDEX IF NOT EXISTS idx_search_audits_client ON search_audits(client_id, domain, id);
+CREATE INDEX IF NOT EXISTS idx_clients_crm_slug ON clients(crm_slug);
 `);
 
 // ---- Data migration: every pre-existing monitor gets a personal client ----
