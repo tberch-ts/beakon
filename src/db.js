@@ -112,6 +112,33 @@ CREATE TABLE IF NOT EXISTS events (
 
 CREATE INDEX IF NOT EXISTS idx_monitors_user ON monitors(user_id);
 CREATE INDEX IF NOT EXISTS idx_events_monitor ON events(monitor_id);
+
+-- Search Ladder (see SEARCH-LADDER.md). One audit row per run per site; the
+-- newest row per (client, domain) is the current grade. result_json holds the
+-- full check results and the grade as computed at the time.
+CREATE TABLE IF NOT EXISTS search_audits (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  client_id INTEGER NOT NULL,
+  domain TEXT NOT NULL,
+  is_primary INTEGER NOT NULL DEFAULT 1,
+  grade INTEGER NOT NULL,
+  next_rung INTEGER,
+  result_json TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+-- What a human confirmed in Google. scope_key is '*' for facts about the
+-- business (its profile, its listings) and the domain for facts about one site
+-- (Search Console, analytics, content).
+CREATE TABLE IF NOT EXISTS search_attestations (
+  client_id INTEGER NOT NULL,
+  scope_key TEXT NOT NULL,
+  key TEXT NOT NULL,
+  value INTEGER NOT NULL DEFAULT 0,
+  note TEXT,
+  set_by TEXT,
+  set_at INTEGER NOT NULL,
+  PRIMARY KEY (client_id, scope_key, key)
+);
 `);
 
 // ---- Additive migrations for databases created before these columns existed ----
@@ -138,12 +165,17 @@ addColumn('monitors', 'interval_seconds', 'INTEGER NOT NULL DEFAULT 60');
 addColumn('monitors', 'kuma_monitor_id', 'INTEGER');
 addColumn('monitors', 'down_since', 'INTEGER');
 
+// Google Business Profile Place ID, when known (from the CRM's NFC card, a
+// Places lookup, or typed in). Rung 1 of the Search Ladder.
+addColumn('clients', 'place_id', 'TEXT');
+
 db.exec(`
 CREATE UNIQUE INDEX IF NOT EXISTS idx_users_firebase_uid ON users(firebase_uid) WHERE firebase_uid IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_monitors_client ON monitors(client_id);
 CREATE INDEX IF NOT EXISTS idx_monitors_kuma ON monitors(kuma_monitor_id);
 CREATE INDEX IF NOT EXISTS idx_client_users_email ON client_users(email);
 CREATE INDEX IF NOT EXISTS idx_events_created ON events(created_at);
+CREATE INDEX IF NOT EXISTS idx_search_audits_client ON search_audits(client_id, domain, id);
 `);
 
 // ---- Data migration: every pre-existing monitor gets a personal client ----

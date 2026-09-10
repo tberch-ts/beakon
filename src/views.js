@@ -2,6 +2,7 @@
 // Minimal server-rendered HTML. No template engine dependency — just functions.
 import { PLANS, trialDaysLeft, isAccountActive } from './plans.js';
 import { effectiveAlertMode } from './clients.js';
+import { RUNGS, CHECKS, ATTESTATIONS, MAX_RUNG } from './searchLadder.js';
 
 const esc = (s) =>
   String(s ?? '')
@@ -69,6 +70,21 @@ function layout(title, body, opts = {}) {
   .gbtn { display:inline-flex; align-items:center; gap:10px; width:100%; justify-content:center; background:#fff; color:#111; border-radius:8px; padding:11px 16px; font-weight:600; border:0; cursor:pointer; }
   .hide { display:none; }
   code { background:#0d1626; padding:2px 6px; border-radius:6px; font-size:13px; }
+  .grade { display:inline-flex; align-items:baseline; gap:4px; font-weight:800; font-size:34px; line-height:1; }
+  .grade small { font-size:14px; color:var(--muted); font-weight:600; }
+  .ladder { display:grid; grid-template-columns:repeat(10, 1fr); gap:4px; margin:10px 0; }
+  .ladder span { height:10px; border-radius:3px; background:rgba(144,160,192,.2); }
+  .ladder span.on { background:var(--green); }
+  .ladder span.next { background:var(--amber); }
+  .rung { border:1px solid var(--line); border-radius:10px; padding:12px 14px; margin:8px 0; }
+  .rung.cleared { border-color:rgba(34,197,94,.4); }
+  .rung.next { border-color:rgba(245,158,11,.6); background:rgba(245,158,11,.06); }
+  .rung h4 { margin:0 0 4px; font-size:15px; display:flex; gap:10px; align-items:center; }
+  .item { display:flex; gap:10px; align-items:flex-start; padding:6px 0; border-top:1px solid var(--line); font-size:14px; }
+  .item .mark { flex:0 0 22px; font-weight:800; }
+  .item .mark.ok { color:#86efac; } .item .mark.no { color:#fca5a5; } .item .mark.todo { color:#fcd34d; }
+  .item label { display:flex; gap:8px; align-items:flex-start; margin:0; color:var(--text); font-size:14px; cursor:pointer; }
+  .item .fix { color:var(--muted); font-size:13px; margin-top:2px; }
 </style>
 </head><body>
 <header class="top">
@@ -345,6 +361,7 @@ export function adminPage({ user, clients, orphanMonitors, monitorTypes, kuma, i
         <span>${esc(c.name)}</span>
         <span class="muted small">${esc(c.slug)}${c.domain ? ' · ' + esc(c.domain) : ''} · ${esc(c.source)}${c.crm_client_id ? ' · CRM #' + c.crm_client_id : ''}</span>
         <span class="pill ${c.down_count > 0 ? 'down' : c.monitors.length ? 'up' : 'unknown'}">${c.down_count > 0 ? c.down_count + ' DOWN' : c.monitors.length ? 'ALL UP' : 'NO MONITORS'}</span>
+        ${gradePill(c.search)}
         <span class="muted small">${c.monitors.length} monitor(s) · ${c.users.length} user(s)</span>
         <span style="margin-left:auto">${alertStatusLine(c, integrations.mail)}</span>
       </summary>
@@ -353,6 +370,8 @@ export function adminPage({ user, clients, orphanMonitors, monitorTypes, kuma, i
         ${monitorRows(c.monitors)}
         <h3>Add monitor (free to client)</h3>
         ${addMonitorForm({ action: '/admin/monitors', monitorTypes, clientId: c.id })}
+        <h3>Search ladder</h3>
+        ${searchSummaryHtml(c)}
         <h3>Alerts</h3>
         ${alertForm(c, { action: `/app/clients/${c.id}/alerts`, back: '/admin', isAdmin: true, kumaChannels: kuma.channels, mailConfigured: integrations.mail })}
         <h3>Who can sign in</h3>
@@ -414,6 +433,111 @@ export function adminPage({ user, clients, orphanMonitors, monitorTypes, kuma, i
       ${eventsTable(events, { showClient: true })}
     </div>
   `, { nav, wide: true, script: addMonitorScript });
+}
+
+// ---------- Search ladder ----------
+function gradePill(search) {
+  if (!search) return '<span class="pill unknown">SEARCH ?/10</span>';
+  const cls = search.grade >= 7 ? 'up' : search.grade >= 3 ? 'warn' : 'down';
+  return `<span class="pill ${cls}" title="Search Ladder grade">SEARCH ${search.grade}/10</span>`;
+}
+
+function searchSummaryHtml(c) {
+  const s = c.search;
+  const analyze = `<form method="post" action="/admin/clients/${c.id}/search/analyze" class="inline"><button class="secondary small">${s ? 'Re-analyze' : 'Analyze search'}</button></form>`;
+  if (!s) return `<p class="muted small">Not analyzed yet. ${c.domain || c.monitors.some((m) => m.type === 'http') ? analyze : 'Give the client a domain or an HTTP monitor first.'}</p>`;
+  return `<div class="row" style="align-items:center">
+    <div class="auto"><span class="grade">${s.grade}<small>/ ${MAX_RUNG}</small></span></div>
+    <div><div>${s.next ? `Next phase: <strong>Rung ${s.next.rung} — ${esc(s.next.name)}</strong> <span class="muted small">(${s.next.failing.length + s.next.missing.length} item(s) to clear)</span>` : '<strong>Top of the ladder.</strong>'}</div>
+      <div class="muted small">${esc(s.domain)}${s.sites.length > 1 ? ` + ${s.sites.length - 1} more site(s)` : ''} · analyzed ${new Date(s.analyzedAt * 1000).toLocaleString()}</div></div>
+    <div class="auto"><a class="btn secondary small" href="/admin/clients/${c.id}/search">Open report</a> ${analyze}</div>
+  </div>`;
+}
+
+/**
+ * The full ladder report for one client: one tab per site, the grade, the
+ * next phase as a work order, every rung with its checks, and the attestation
+ * form. `report` is searchReportForCrm(); `site` is the selected site.
+ */
+export function searchReportPage({ user, client, report, site, history, flash, placesConfigured }) {
+  const nav = `<a href="/admin">Admin</a><a href="/app">Dashboard</a><a href="/logout">Sign out</a>`;
+  const back = `/admin/clients/${client.id}/search`;
+  if (!site) {
+    return layout(`Search — ${client.name}`, `
+      ${flashHtml(flash)}
+      <p><a href="/admin">← All clients</a></p>
+      <h1>${esc(client.name)} · Search ladder</h1>
+      <div class="card"><p class="muted">Nothing analyzed yet.</p>
+        <form method="post" action="/admin/clients/${client.id}/search/analyze"><button>Analyze search</button></form>
+        <p class="muted small" style="margin-top:10px">Analyzes ${esc(client.domain || 'every HTTP monitor at a site root')}. Takes a few seconds per site.</p></div>`, { nav, wide: true });
+  }
+  const tabs = report.sites.length > 1 ? `<p class="tabs">${report.sites.map((st) => `<a class="${st.domain === site.domain ? 'on' : ''}" href="${back}?domain=${encodeURIComponent(st.domain)}">${esc(st.domain)} · ${st.grade}/${MAX_RUNG}${st.isPrimary ? ' · primary' : ''}</a>`).join('')}</p>` : '';
+  const ladderBar = `<div class="ladder">${Array.from({ length: MAX_RUNG }, (_, i) => `<span class="${i + 1 <= site.grade ? 'on' : site.next && i + 1 === site.next.rung ? 'next' : ''}" title="Rung ${i + 1}: ${esc(RUNGS[i + 1].name)}"></span>`).join('')}</div>`;
+
+  const checkItem = (id) => {
+    const c = site.checks[id] || { ok: false, detail: 'not run' };
+    return `<div class="item"><span class="mark ${c.ok ? 'ok' : 'no'}">${c.ok ? '✓' : '✗'}</span><div><div>${esc(CHECKS[id].label)} <span class="muted small">· ${esc(c.detail || '')}</span></div>${c.ok ? '' : `<div class="fix">Fix: ${esc(CHECKS[id].fix)}</div>`}</div></div>`;
+  };
+  const attItem = (id) => {
+    const a = site.attestations[id];
+    const on = Boolean(a?.value);
+    const def = ATTESTATIONS[id];
+    return `<div class="item"><span class="mark ${on ? 'ok' : 'todo'}">${on ? '✓' : '☐'}</span><div>
+      <label><input type="checkbox" name="att_${id}" ${on ? 'checked' : ''}> <span>${esc(def.label)} <span class="pill ${def.scope === 'business' ? 'info' : 'unknown'}" title="${def.scope === 'business' ? 'about the business — shared by all its sites' : 'about this site only'}">${def.scope}</span></span></label>
+      <div class="fix">${esc(def.how)}${a?.set_at ? ` <span class="muted">· ${on ? 'confirmed' : 'cleared'} ${new Date(a.set_at * 1000).toLocaleDateString()}${a.set_by ? ' by ' + esc(a.set_by) : ''}</span>` : ''}</div></div></div>`;
+  };
+
+  const rungBlocks = site.rungs.map((r) => {
+    const def = RUNGS.find((x) => x.rung === r.rung);
+    const isNext = site.next && site.next.rung === r.rung;
+    return `<div class="rung ${r.cleared ? 'cleared' : ''} ${isNext ? 'next' : ''}" id="rung-${r.rung}">
+      <h4><span class="pill ${r.cleared ? 'up' : isNext ? 'warn' : 'unknown'}">${r.cleared ? 'CLEARED' : isNext ? 'NEXT PHASE' : 'LATER'}</span> Rung ${r.rung} — ${esc(r.name)}</h4>
+      <div class="muted small" style="margin-bottom:6px">${esc(def.summary)}${def.why ? ` <em>${esc(def.why)}</em>` : ''}</div>
+      ${def.checks.map(checkItem).join('')}
+      ${def.attestations.map(attItem).join('')}
+    </div>`;
+  }).join('');
+
+  const nextCard = site.next ? `
+    <div class="card" style="border-color:rgba(245,158,11,.6)">
+      <h2>Next phase: Rung ${site.next.rung} — ${esc(site.next.name)}</h2>
+      <p class="muted">${esc(site.next.summary)} ${site.next.why ? esc(site.next.why) : ''}</p>
+      ${site.next.failing.length ? `<h3>Fix on the site</h3>${site.next.failing.map(checkItem).join('')}` : ''}
+      ${site.next.missing.length ? `<h3>Confirm in Google, then tick below</h3><ul>${site.next.missing.map((id) => `<li>${esc(ATTESTATIONS[id].label)} <span class="muted small">— ${esc(ATTESTATIONS[id].how)}</span></li>`).join('')}</ul>` : ''}
+    </div>` : `<div class="card"><h2>Top of the ladder</h2><p class="muted">Every rung is cleared. Keep the monthly review on the calendar.</p></div>`;
+
+  const ahead = site.ahead.length ? `<p class="muted small">Already in place higher up (not credited until the rungs below clear): ${site.ahead.map((a) => `rung ${a.rung} ${esc(a.label)}`).join(' · ')}.</p>` : '';
+
+  const hist = history.length > 1 ? `<div class="card"><h2>History</h2><table><thead><tr><th>When</th><th>Grade</th><th>Next rung</th></tr></thead><tbody>${history.map((h) => `<tr><td>${fmtTime(h.created_at)}</td><td><strong>${h.grade}</strong></td><td>${h.next_rung ?? '—'}</td></tr>`).join('')}</tbody></table></div>` : '';
+
+  return layout(`Search — ${client.name}`, `
+    ${flashHtml(flash)}
+    <p><a href="/admin">← All clients</a></p>
+    <h1>${esc(client.name)} · Search ladder</h1>
+    <p class="muted">Signed in as ${esc(user.email)} · <a href="https://${esc(site.domain)}/" target="_blank" rel="noopener">${esc(site.domain)}</a> · analyzed ${new Date(site.analyzedAt * 1000).toLocaleString()} · ${site.pages.length} page(s) read${site.sitemap?.count ? `, ${site.sitemap.count} in the sitemap` : ''}</p>
+    ${tabs}
+    <div class="card">
+      <div class="row" style="align-items:center">
+        <div class="auto"><span class="grade">${site.grade}<small>/ ${MAX_RUNG}</small></span></div>
+        <div>${ladderBar}<div class="muted small">Green: cleared. Amber: the next phase. A rung counts only when everything on it and below it is done.</div></div>
+        <div class="auto"><form method="post" action="/admin/clients/${client.id}/search/analyze" class="inline"><input type="hidden" name="domain" value="${esc(site.domain)}"><button>Re-analyze</button></form></div>
+      </div>
+      ${ahead}
+    </div>
+    ${nextCard}
+    <form method="post" action="/admin/clients/${client.id}/search/attest">
+      <input type="hidden" name="domain" value="${esc(site.domain)}">
+      <div class="card">
+        <h2>Every rung</h2>
+        <p class="muted small">Ticks are attestations: things you confirmed by looking in Google. Save re-grades instantly without re-fetching the site.</p>
+        ${rungBlocks}
+        <h3>Business Profile Place ID</h3>
+        <div class="row"><div><input name="place_id" value="${esc(client.place_id || '')}" placeholder="ChIJ…"></div><div class="auto"><button class="secondary">Save ticks + Place ID</button></div></div>
+        <p class="muted small">${placesConfigured ? 'Left blank, Beakon searches Google Places for the business name and accepts a result whose website is this domain.' : 'Find it in the CRM card, or at developers.google.com/maps/documentation/places/web-service/place-id. Set GOOGLE_PLACES_API_KEY to have Beakon look it up.'}</p>
+      </div>
+    </form>
+    ${hist}
+  `, { nav, wide: true });
 }
 
 // ---------- Billing ----------

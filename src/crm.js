@@ -14,6 +14,7 @@ import crypto from 'node:crypto';
 import { now } from './db.js';
 import { createClient, getClientBySlug, updateClient, grantAccess, updateAlertSettings } from './clients.js';
 import { createMonitor, findMonitorByUrl, listMonitorsForClient } from './monitors.js';
+import { searchSummary } from './search.js';
 
 const CRM_API_URL = (process.env.CRM_API_URL || '').replace(/\/+$/, '');
 const CRM_SIGNAL_TOKEN = process.env.CRM_SIGNAL_TOKEN || '';
@@ -141,5 +142,5 @@ export function clientStatusForCrm(client) {
     id: m.id, name: m.name, url: m.url, type: m.type, active: Boolean(m.active), status: m.last_status,
     lastCheckedAt: m.last_checked_at, responseMs: m.last_response_ms, sslExpiresAt: m.ssl_expires_at, source: m.source,
   }));
-  return { client: { id: client.id, slug: client.slug, name: client.name, domain: client.domain, alertEmail: client.alert_email, alertVerified: Boolean(client.alert_email_verified_at), alertsEnabled: Boolean(client.alerts_enabled) }, monitors };
+  return { client: { id: client.id, slug: client.slug, name: client.name, domain: client.domain, placeId: client.place_id || null, alertEmail: client.alert_email, alertVerified: Boolean(client.alert_email_verified_at), alertsEnabled: Boolean(client.alerts_enabled) }, monitors, search: searchSummary(client.id) };
 }
