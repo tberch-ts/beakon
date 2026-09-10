@@ -29,7 +29,7 @@ import { kuma, isKumaEnabled, availableMonitorTypes } from './kuma.js';
 import { isMailConfigured } from './mailer.js';
 import { crmWebhookAuth, upsertClientFromCrm, clientStatusForCrm, isCrmSignalConfigured, isCrmWebhookConfigured } from './crm.js';
 import { loginPage, forbiddenPage, adminPage, verifyPage, searchReportPage } from './views.js';
-import { analyzeClient, searchSummary, searchReportForCrm, setAttestations, auditHistory, isPlacesConfigured } from './search.js';
+import { analyzeClient, searchSummary, searchReportForCrm, setAttestations, auditHistory, isPlacesConfigured, isReviewLink } from './search.js';
 import { ATTESTATIONS } from './searchLadder.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -261,9 +261,14 @@ app.post('/admin/clients/:id/search/attest', requireAdmin, (req, res) => {
   for (const key of Object.keys(ATTESTATIONS)) values[key] = Boolean(req.body[`att_${key}`]);
   setAttestations(client.id, domain, values, req.user.email);
   const placeId = String(req.body.place_id || '').trim().slice(0, 200) || null;
-  const placeChanged = placeId !== (client.place_id || null);
-  if (placeChanged) db.prepare('UPDATE clients SET place_id = ? WHERE id = ?').run(placeId, client.id);
-  flash(req, placeChanged ? 'Attestations and Place ID saved. Re-analyze to credit the Place ID.' : 'Attestations saved and re-graded.');
+  const reviewUrl = String(req.body.review_url || '').trim().slice(0, 500) || null;
+  if (reviewUrl && !isReviewLink(reviewUrl)) {
+    flash(req, 'That does not look like a Google review link (g.page/r/…/review or search.google.com/local/writereview?placeid=…).', 'err');
+    return res.redirect(`/admin/clients/${client.id}/search?domain=${encodeURIComponent(domain)}`);
+  }
+  const profileChanged = placeId !== (client.place_id || null) || reviewUrl !== (client.review_url || null);
+  if (profileChanged) db.prepare('UPDATE clients SET place_id = ?, review_url = ? WHERE id = ?').run(placeId, reviewUrl, client.id);
+  flash(req, profileChanged ? 'Attestations and profile details saved. Re-analyze to credit them.' : 'Attestations saved and re-graded.');
   res.redirect(`/admin/clients/${client.id}/search?domain=${encodeURIComponent(domain)}`);
 });
 
@@ -292,13 +297,13 @@ app.get('/api/crm/clients/:slug', crmWebhookAuth, (req, res) => {
   res.json({ ok: true, ...clientStatusForCrm(client) });
 });
 
-// The CRM's "Analyze search" button lands here. Body: { placeId?, domains? }.
+// The CRM's "Analyze search" button lands here. Body: { placeId?, reviewUrl?, domains? }.
 app.post('/api/crm/clients/:slug/search/analyze', crmWebhookAuth, async (req, res) => {
   const client = getClientByCrmSlug(String(req.params.slug).toLowerCase());
   if (!client) return res.status(404).json({ ok: false, error: 'not_found' });
   try {
     const body = req.body || {};
-    await analyzeClient(client, { placeId: body.placeId || null, domains: Array.isArray(body.domains) ? body.domains : null, setBy: 'crm' });
+    await analyzeClient(client, { placeId: body.placeId || null, reviewUrl: body.reviewUrl || null, domains: Array.isArray(body.domains) ? body.domains : null, setBy: 'crm' });
     res.json({ ok: true, reportUrl: `${BASE_URL}/admin/clients/${client.id}/search`, ...searchReportForCrm(client.id) });
   } catch (err) {
     console.error('[search] analyze failed:', err.message);

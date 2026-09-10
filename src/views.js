@@ -451,9 +451,13 @@ export function searchReportPage({ user, client, report, site, history, flash, p
         <h2>Every rung</h2>
         <p class="muted small">Ticks are attestations: things you confirmed by looking in Google. Save re-grades instantly without re-fetching the site.</p>
         ${rungBlocks}
-        <h3>Business Profile Place ID</h3>
-        <div class="row"><div><input name="place_id" value="${esc(client.place_id || '')}" placeholder="ChIJ…"></div><div class="auto"><button class="secondary">Save ticks + Place ID</button></div></div>
-        <p class="muted small">${placesConfigured ? 'Left blank, Beakon searches Google Places for the business name and accepts a result whose website is this domain.' : 'Find it in the CRM card, or at developers.google.com/maps/documentation/places/web-service/place-id. Set GOOGLE_PLACES_API_KEY to have Beakon look it up.'}</p>
+        <h3>Business Profile</h3>
+        <div class="row">
+          <div><label>Place ID</label><input name="place_id" value="${esc(client.place_id || '')}" placeholder="ChIJ…"></div>
+          <div><label>Review link</label><input name="review_url" value="${esc(client.review_url || '')}" placeholder="https://g.page/r/…/review"></div>
+          <div class="auto"><label>&nbsp;</label><button class="secondary">Save ticks + profile</button></div>
+        </div>
+        <p class="muted small">Either one proves the profile exists and clears "Business Profile located". The CRM sends both when it has them (the card's review link, the sale's Place ID).${placesConfigured ? ' With both blank, Beakon searches Google Places for the business name and accepts a result whose website is on this domain or its parent domain.' : ' Set GOOGLE_PLACES_API_KEY to have Beakon look the profile up by name.'}</p>
       </div>
     </form>
     ${hist}

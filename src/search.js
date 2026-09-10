@@ -251,6 +251,25 @@ async function loadSitemap(origin, robots) {
 // Google Business Profile lookup (optional; needs GOOGLE_PLACES_API_KEY)
 // ---------------------------------------------------------------------------
 
+/**
+ * Do two hostnames belong to the same site for profile purposes? A profile's
+ * website is usually the apex (talkstudio.space); the client's monitored site
+ * may be a subdomain of it (marketing.talkstudio.space). One business, one
+ * profile, several sites — see SEARCH-LADDER.md — so either direction counts.
+ */
+export function sameSite(a, b) {
+  const x = String(a || '').toLowerCase().replace(/^www\./, '');
+  const y = String(b || '').toLowerCase().replace(/^www\./, '');
+  if (!x || !y) return false;
+  return x === y || x.endsWith('.' + y) || y.endsWith('.' + x);
+}
+
+/** A Google review link is only issued for an existing profile. Accept the known shapes. */
+export function isReviewLink(u) {
+  const s = String(u || '').trim();
+  return /^https?:\/\/(g\.page\/r\/[A-Za-z0-9_-]+(\/review)?|search\.google\.com\/local\/writereview\?placeid=|(www\.)?google\.com\/maps\/place\/|maps\.app\.goo\.gl\/)/i.test(s);
+}
+
 const PLACES_KEY = process.env.GOOGLE_PLACES_API_KEY || '';
 export const isPlacesConfigured = () => Boolean(PLACES_KEY);
 
@@ -269,11 +288,10 @@ export async function findPlaceForBusiness(name, host, hint = '') {
     });
     if (!res.ok) return null;
     const data = await res.json();
-    const bare = (h) => String(h || '').toLowerCase().replace(/^www\./, '');
     for (const p of data.places || []) {
       let siteHost = '';
-      try { siteHost = bare(new URL(p.websiteUri).hostname); } catch { /* no website on the profile */ }
-      if (siteHost && siteHost === bare(host)) return { placeId: p.id, website: p.websiteUri, name: p.displayName?.text || name, address: p.formattedAddress || null };
+      try { siteHost = new URL(p.websiteUri).hostname; } catch { /* no website on the profile */ }
+      if (siteHost && sameSite(siteHost, host)) return { placeId: p.id, website: p.websiteUri, name: p.displayName?.text || name, address: p.formattedAddress || null };
     }
     return null;
   } catch {
@@ -293,7 +311,7 @@ const short = (urls, n = 3) => urls.slice(0, n).map((u) => u.replace(/^https?:\/
  * Run every automated check against one site. `domain` may be a bare host or a
  * URL. Returns { domain, origin, checks: { id: { ok, detail } }, pages, sitemap, ms }.
  */
-export async function analyzeSite(domain, { placeId = null, businessName = null } = {}) {
+export async function analyzeSite(domain, { placeId = null, reviewUrl = null, businessName = null } = {}) {
   const started = Date.now();
   const checks = {};
   const startUrl = normalizeUrl(domain);
@@ -315,7 +333,7 @@ export async function analyzeSite(domain, { placeId = null, businessName = null 
   if (!origin) {
     // Nothing else can be checked without a homepage; mark every other check as failed with the reason.
     for (const id of Object.keys(CHECKS)) if (!checks[id]) checks[id] = fail('homepage unreachable');
-    checks.gbp_listed = placeId ? pass(`Place ID ${placeId}`) : fail('no Place ID on record');
+    checks.gbp_listed = placeId ? pass(`Place ID ${placeId}`) : isReviewLink(reviewUrl) ? pass(`review link on record: ${reviewUrl}`) : fail('no Place ID or review link on record');
     return { domain: inputHost, origin: null, checks, pages: [], sitemap: null, home: { status: home.status, error: home.error }, ms: Date.now() - started };
   }
 
@@ -433,15 +451,21 @@ export async function analyzeSite(domain, { placeId = null, businessName = null 
   const dupes = titles.filter((t, i) => titles.indexOf(t) !== i);
   checks.unique_titles = dupes.length ? fail(`duplicate: "${dupes[0]}"`) : pass(`${titles.length} distinct title(s)`);
 
-  // ---- Rung 1: the profile
+  // ---- Rung 1: the profile. Any one of these proves it exists: a Place ID,
+  // a review link (Google only issues one for a profile), or a Places result
+  // whose website is this site.
   let place = null;
   if (placeId) {
     checks.gbp_listed = pass(`Place ID ${placeId}`);
+  } else if (isReviewLink(reviewUrl)) {
+    checks.gbp_listed = pass(`review link on record: ${reviewUrl}`);
   } else if (isPlacesConfigured() && businessName) {
     place = await findPlaceForBusiness(businessName, host);
-    checks.gbp_listed = place ? pass(`found "${place.name}" (${place.placeId}) with website ${place.website}`) : fail(`no profile named "${businessName}" links to ${host}`);
+    checks.gbp_listed = place
+      ? pass(`found "${place.name}" (${place.placeId}) with website ${place.website}`)
+      : fail(`no profile named "${businessName}" has a website on ${bareHost} — if the profile exists, paste its review link or Place ID; if not, create it`);
   } else {
-    checks.gbp_listed = fail(isPlacesConfigured() ? 'no business name to search for' : 'no Place ID on record (set GOOGLE_PLACES_API_KEY to look it up automatically)');
+    checks.gbp_listed = fail(isPlacesConfigured() ? 'no business name to search for' : 'no Place ID or review link on record (set GOOGLE_PLACES_API_KEY to look it up automatically)');
   }
 
   return {
@@ -540,12 +564,17 @@ export function regrade(audit) {
 
 /**
  * Analyze every site of a client, store each audit, and return the roll-up.
- * opts.placeId — a Place ID the CRM knows (from an NFC card); saved on the client.
+ * opts.placeId — a Place ID the CRM knows (from an NFC card or counter sale); saved on the client.
+ * opts.reviewUrl — the profile's review link the CRM knows (from the card page); saved on the client.
  * opts.domains — override the site list (the CRM's client_sites).
  */
-export async function analyzeClient(client, { placeId = null, domains = null, setBy = null } = {}) {
+export async function analyzeClient(client, { placeId = null, reviewUrl = null, domains = null, setBy = null } = {}) {
   if (placeId && placeId !== client.place_id) {
     db.prepare('UPDATE clients SET place_id = ? WHERE id = ?').run(String(placeId).slice(0, 200), client.id);
+    client = getClient(client.id);
+  }
+  if (reviewUrl && isReviewLink(reviewUrl) && reviewUrl !== client.review_url) {
+    db.prepare('UPDATE clients SET review_url = ? WHERE id = ?').run(String(reviewUrl).trim().slice(0, 500), client.id);
     client = getClient(client.id);
   }
   const hosts = (Array.isArray(domains) && domains.length ? domains.map((d) => { try { return new URL(normalizeUrl(d)).hostname.toLowerCase(); } catch { return null; } }).filter(Boolean) : sitesForClient(client)).slice(0, MAX_SITES_PER_CLIENT);
@@ -554,7 +583,7 @@ export async function analyzeClient(client, { placeId = null, domains = null, se
 
   const sites = [];
   for (const host of hosts) {
-    const result = await analyzeSite(host, { placeId: client.place_id, businessName: client.name });
+    const result = await analyzeSite(host, { placeId: client.place_id, reviewUrl: client.review_url, businessName: client.name });
     if (result.place?.placeId && !client.place_id) {
       db.prepare('UPDATE clients SET place_id = ? WHERE id = ?').run(result.place.placeId, client.id);
       client = getClient(client.id);

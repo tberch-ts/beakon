@@ -167,6 +167,10 @@ addColumn('monitors', 'down_since', 'INTEGER');
 // Google Business Profile Place ID, when known (from the CRM's NFC card, a
 // Places lookup, or typed in). Rung 1 of the Search Ladder.
 addColumn('clients', 'place_id', 'TEXT');
+// The profile's review link (g.page/r/... or search.google.com/local/writereview).
+// Not a Place ID, but you cannot have one without a profile, so it clears
+// rung 1's 'profile located' check on its own. The CRM has it from the card.
+addColumn('clients', 'review_url', 'TEXT');
 // The client's slug AS THE CRM KNOWS IT. Onboarding sets it to the CRM slug;
 // a client created here by hand gets it typed in, and from then on the CRM's
 // calls (/api/crm/clients/:slug/...) find this row.
