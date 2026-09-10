@@ -41,8 +41,32 @@ and is wired to **marketingCRM**: see [UPTIME-KUMA.md](UPTIME-KUMA.md).
   CRM's `admin` claim makes an admin here too. `POST /api/crm/clients` is how
   the CRM creates clients and monitors at onboarding.
 
+### The Search Ladder
+
+Beakon also grades where each client stands in **search**, 0 to 10, and names
+the next phase of work. It is a ladder, not a score: a rung counts only when
+everything on it and on every rung below it is done, so "what do we do next for
+this client" is always the first rung not cleared. The rungs, why they are in
+that order, and how we are climbing it on our own site are in
+[SEARCH-LADDER.md](SEARCH-LADDER.md); the table itself is `src/searchLadder.js`.
+
+- `/admin` shows a `SEARCH n/10` pill per client and an **Analyze search**
+  button; `/admin/clients/:id/search` is the full report: the grade, the next
+  phase as a work order (what to fix on the site, what to confirm in Google),
+  every rung, and the tick-boxes for the things only a person logged into
+  Google can confirm. Ticks re-grade instantly; the button re-fetches the site.
+- A client with several sites gets a tab per domain; the headline grade is the
+  primary domain's.
+- The CRM's "Analyze search" button calls `POST /api/crm/clients/:slug/search/analyze`
+  (same bearer as onboarding), passing the Business Profile Place ID it knows
+  from the NFC card. `GET …/search` returns the stored report and
+  `PUT …/search/attestations` records confirmations.
+- Optional `GOOGLE_PLACES_API_KEY` lets Beakon find the profile itself by
+  business name, accepting only a result whose website is the client's domain.
+
 | Additional files | What they do |
 |---|---|
+| `src/searchLadder.js`, `src/search.js` | The ladder definition; the analyzer (fetch, checks, grade, store) |
 | `src/kuma.js` | Uptime Kuma Socket.IO client + monitor spec builder |
 | `src/engine.js` | check results → transitions, alerts, CRM signals |
 | `src/monitors.js`, `src/clients.js` | monitor / client model, Kuma mirroring, alert-email confirmation |

@@ -29,7 +29,9 @@ import {
 import { kuma, isKumaEnabled, availableMonitorTypes } from './kuma.js';
 import { isMailConfigured } from './mailer.js';
 import { crmWebhookAuth, upsertClientFromCrm, clientStatusForCrm, isCrmSignalConfigured, isCrmWebhookConfigured } from './crm.js';
-import { loginPage, signupPage, dashboard, adminPage, billingPage, verifyPage } from './views.js';
+import { loginPage, signupPage, dashboard, adminPage, billingPage, verifyPage, searchReportPage } from './views.js';
+import { analyzeClient, searchSummary, searchReportForCrm, setAttestations, auditHistory, isPlacesConfigured } from './search.js';
+import { ATTESTATIONS } from './searchLadder.js';
 import { getClientBySlug } from './clients.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -277,7 +279,7 @@ app.get('/admin', requireAdmin, (req, res) => {
   }
   res.send(adminPage({
     user: req.user,
-    clients: clients.map((c) => ({ ...c, monitors: byClient.get(c.id) || [], users: listClientUsers(c.id) })),
+    clients: clients.map((c) => ({ ...c, monitors: byClient.get(c.id) || [], users: listClientUsers(c.id), search: searchSummary(c.id) })),
     orphanMonitors: byClient.get(null) || [],
     monitorTypes: availableMonitorTypes(),
     kuma: {
@@ -359,6 +361,81 @@ app.post('/admin/kuma/import', requireAdmin, async (req, res) => {
     flash(req, `Import failed: ${err.message}`, 'err');
   }
   res.redirect('/admin');
+});
+
+// ---- Search ladder: grade a client's search position, 0–10 ----
+// The analysis fetches the site (a few seconds per site) inside the request;
+// the admin console is one person clicking a button, so that is fine here.
+app.get('/admin/clients/:id/search', requireAdmin, (req, res) => {
+  const client = getClient(parseInt(req.params.id, 10));
+  if (!client) return res.status(404).send('No such client.');
+  const report = searchReportForCrm(client.id);
+  const wanted = String(req.query.domain || '').toLowerCase();
+  const site = report.sites.find((s) => s.domain === wanted) || report.sites.find((s) => s.isPrimary) || report.sites[0] || null;
+  res.send(searchReportPage({
+    user: req.user, client, report, site,
+    history: site ? auditHistory(client.id, site.domain) : [],
+    flash: takeFlash(req), placesConfigured: isPlacesConfigured(),
+  }));
+});
+
+app.post('/admin/clients/:id/search/analyze', requireAdmin, async (req, res) => {
+  const client = getClient(parseInt(req.params.id, 10));
+  if (!client) return res.status(404).send('No such client.');
+  try {
+    const r = await analyzeClient(client, { setBy: req.user.email });
+    flash(req, `Analyzed ${r.sites.length} site(s): ${r.primary.domain} is on rung ${r.primary.grade}${r.primary.next ? `, next is rung ${r.primary.next.rung} — ${r.primary.next.name}` : ''}.`);
+  } catch (err) {
+    flash(req, `Analysis failed: ${err.message}`, 'err');
+  }
+  res.redirect(`/admin/clients/${client.id}/search${req.body.domain ? `?domain=${encodeURIComponent(req.body.domain)}` : ''}`);
+});
+
+app.post('/admin/clients/:id/search/attest', requireAdmin, (req, res) => {
+  const client = getClient(parseInt(req.params.id, 10));
+  if (!client) return res.status(404).send('No such client.');
+  const domain = String(req.body.domain || '').toLowerCase();
+  // Every attestation is a checkbox; an unticked box is simply absent from the
+  // body, so the whole set is written each time — unchecked means false.
+  const values = {};
+  for (const key of Object.keys(ATTESTATIONS)) values[key] = Boolean(req.body[`att_${key}`]);
+  setAttestations(client.id, domain, values, req.user.email);
+  const placeId = String(req.body.place_id || '').trim().slice(0, 200) || null;
+  const placeChanged = placeId !== (client.place_id || null);
+  if (placeChanged) db.prepare('UPDATE clients SET place_id = ? WHERE id = ?').run(placeId, client.id);
+  flash(req, placeChanged ? 'Attestations and Place ID saved. Re-analyze to credit the Place ID.' : 'Attestations saved and re-graded.');
+  res.redirect(`/admin/clients/${client.id}/search?domain=${encodeURIComponent(domain)}`);
+});
+
+// The CRM's "Analyze search" button lands here. Body: { placeId?, domains? }.
+app.post('/api/crm/clients/:slug/search/analyze', crmWebhookAuth, async (req, res) => {
+  const client = getClientBySlug(String(req.params.slug).toLowerCase());
+  if (!client) return res.status(404).json({ ok: false, error: 'not_found' });
+  try {
+    const body = req.body || {};
+    await analyzeClient(client, { placeId: body.placeId || null, domains: Array.isArray(body.domains) ? body.domains : null, setBy: 'crm' });
+    res.json({ ok: true, reportUrl: `${BASE_URL}/admin/clients/${client.id}/search`, ...searchReportForCrm(client.id) });
+  } catch (err) {
+    console.error('[search] analyze failed:', err.message);
+    res.status(400).json({ ok: false, error: err.message });
+  }
+});
+
+app.get('/api/crm/clients/:slug/search', crmWebhookAuth, (req, res) => {
+  const client = getClientBySlug(String(req.params.slug).toLowerCase());
+  if (!client) return res.status(404).json({ ok: false, error: 'not_found' });
+  res.json({ ok: true, reportUrl: `${BASE_URL}/admin/clients/${client.id}/search`, ...searchReportForCrm(client.id) });
+});
+
+// Body: { domain?, attestations: { key: boolean } }. Lets the CRM tick
+// "profile verified" when the card deal passes gbp_setup, for instance.
+app.put('/api/crm/clients/:slug/search/attestations', crmWebhookAuth, (req, res) => {
+  const client = getClientBySlug(String(req.params.slug).toLowerCase());
+  if (!client) return res.status(404).json({ ok: false, error: 'not_found' });
+  const body = req.body || {};
+  const domain = String(body.domain || client.domain || '').toLowerCase();
+  setAttestations(client.id, domain, body.attestations || {}, 'crm');
+  res.json({ ok: true, ...searchReportForCrm(client.id) });
 });
 
 // ---- CRM webhook: onboarding creates the client + monitors here ----
