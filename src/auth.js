@@ -1,8 +1,11 @@
 // src/auth.js
-// Identity. One Google identity per person, verified through the same Firebase
-// project marketingCRM uses (marketingcrm-c5d57), so a customer signs in to
-// their CRM portal and to Beakon with one account, and the operator's `admin`
-// custom claim (set with the CRM's setAdmin script) makes them an admin here too.
+// Identity. Beakon has exactly one kind of user: an admin of the marketing CRM.
+//
+// Sign-in is Google through the SAME Firebase project marketingCRM uses
+// (marketingcrm-c5d57). The CRM's `admin` custom claim (set with its set-admin
+// script) is what makes somebody an admin here — there is no separate admin
+// list, no password login, no customer role. Somebody who signs in without the
+// claim gets a session that can only see /forbidden.
 //
 // The browser signs in with the Firebase web SDK and posts the ID token to
 // POST /auth/firebase; this module verifies it with firebase-admin and maps it
@@ -12,8 +15,6 @@
 //   FIREBASE_SERVICE_ACCOUNT_JSON   service account JSON, raw or base64 (server side)
 //   FIREBASE_WEB_API_KEY / FIREBASE_WEB_AUTH_DOMAIN / FIREBASE_WEB_PROJECT_ID /
 //   FIREBASE_WEB_APP_ID             the public web config (browser side)
-//   ADMIN_EMAILS                    comma-separated fallback admin list
-//   LEGACY_PASSWORD_LOGIN=true      keep the old email+password form available
 import { db, now } from './db.js';
 
 let adminApp = null;
@@ -57,22 +58,6 @@ export function isFirebaseEnabled() {
   return Boolean(process.env.FIREBASE_SERVICE_ACCOUNT_JSON && firebaseWebConfig());
 }
 
-export function isLegacyPasswordLoginEnabled() {
-  // Default: on until Firebase is configured, so existing accounts keep working.
-  if (process.env.LEGACY_PASSWORD_LOGIN) return process.env.LEGACY_PASSWORD_LOGIN === 'true';
-  return !isFirebaseEnabled();
-}
-
-function adminEmails() {
-  return (process.env.ADMIN_EMAILS || '').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
-}
-
-export function isAdminIdentity(decoded) {
-  if (decoded?.admin === true) return true;
-  const email = (decoded?.email || '').toLowerCase();
-  return Boolean(email && adminEmails().includes(email));
-}
-
 /** Verify a Firebase ID token. Throws if Firebase is not configured or the token is bad. */
 export async function verifyIdToken(idToken) {
   const app = await getAdminApp();
@@ -81,17 +66,15 @@ export async function verifyIdToken(idToken) {
   return getAuth(app).verifyIdToken(idToken, true);
 }
 
-const TRIAL_DAYS = parseInt(process.env.TRIAL_DAYS || '14', 10);
-
 /**
  * Map a verified Firebase identity onto a `users` row: by uid first, then by
- * email (linking a pre-Firebase password account to its Google identity), else
- * create. Also refreshes the role and links any client_users grants by email.
+ * email, else create. The role is re-read from the claim on every sign-in, so
+ * revoking `admin` in the CRM takes effect the next time they sign in here.
  */
 export function findOrCreateUserFromFirebase(decoded) {
   const email = (decoded.email || '').toLowerCase();
   if (!email) throw new Error('Google account has no email address.');
-  const role = isAdminIdentity(decoded) ? 'admin' : 'customer';
+  const role = decoded.admin === true ? 'admin' : 'customer';
 
   let user = db.prepare('SELECT * FROM users WHERE firebase_uid = ?').get(decoded.uid);
   if (!user) user = db.prepare('SELECT * FROM users WHERE email = ?').get(email);
@@ -100,25 +83,16 @@ export function findOrCreateUserFromFirebase(decoded) {
       .run(decoded.uid, role, now(), user.id);
   } else {
     const info = db.prepare(`
-      INSERT INTO users (email, password_hash, firebase_uid, role, alert_email, plan, subscription_status, trial_ends_at, created_at, last_login_at)
-      VALUES (?, '', ?, ?, ?, 'trial', 'trialing', ?, ?, ?)
-    `).run(email, decoded.uid, role, email, now() + TRIAL_DAYS * 86400, now(), now());
+      INSERT INTO users (email, password_hash, firebase_uid, role, alert_email, created_at, last_login_at)
+      VALUES (?, '', ?, ?, ?, ?, ?)
+    `).run(email, decoded.uid, role, email, now(), now());
     user = db.prepare('SELECT * FROM users WHERE id = ?').get(info.lastInsertRowid);
   }
-  linkClientGrants(user);
   return db.prepare('SELECT * FROM users WHERE id = ?').get(user.id);
 }
 
-/** Attach this user to every client_users grant that names their email. */
-export function linkClientGrants(user) {
-  db.prepare('UPDATE client_users SET user_id = ? WHERE lower(email) = ? AND (user_id IS NULL OR user_id != ?)')
-    .run(user.id, (user.email || '').toLowerCase(), user.id);
-}
-
 export function isAdminUser(user) {
-  if (!user) return false;
-  if (user.role === 'admin') return true;
-  return adminEmails().includes((user.email || '').toLowerCase());
+  return Boolean(user && user.role === 'admin');
 }
 
 // ---- Express helpers ----
@@ -127,17 +101,12 @@ export function getSessionUser(req) {
   return db.prepare('SELECT * FROM users WHERE id = ?').get(req.session.userId) || null;
 }
 
-export function requireAuth(req, res, next) {
+/** Every human-facing route: a signed-in CRM admin, or a redirect. */
+export function requireAdmin(req, res, next) {
   const user = getSessionUser(req);
   if (!user) return res.redirect('/login');
+  if (!isAdminUser(user)) return res.redirect('/forbidden');
   req.user = user;
-  req.isAdmin = isAdminUser(user);
+  req.isAdmin = true;
   next();
-}
-
-export function requireAdmin(req, res, next) {
-  requireAuth(req, res, () => {
-    if (!req.isAdmin) return res.status(403).send('Admins only.');
-    next();
-  });
 }

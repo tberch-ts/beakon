@@ -8,11 +8,11 @@
 //
 // Inbound: when the CRM onboards a website customer it calls
 // POST /api/crm/clients here with a shared secret, and Beakon creates (or
-// updates) the client, grants the owner access, and adds a monitor per site.
-// Those monitors are source='crm' and free to the customer.
+// updates) the client and adds a monitor per site. The CRM's slug is stored as
+// crm_slug and is how every later call names the client.
 import crypto from 'node:crypto';
 import { now } from './db.js';
-import { createClient, getClientBySlug, updateClient, grantAccess, updateAlertSettings } from './clients.js';
+import { createClient, getClientByCrmSlug, updateClient, updateAlertSettings } from './clients.js';
 import { createMonitor, findMonitorByUrl, listMonitorsForClient } from './monitors.js';
 import { searchSummary } from './search.js';
 
@@ -94,18 +94,15 @@ export async function upsertClientFromCrm(payload, { baseUrl }) {
   const domain = payload.domain ? String(payload.domain).trim().toLowerCase() : null;
   const crmClientId = payload.crmClientId != null ? Number(payload.crmClientId) : null;
 
-  let client = getClientBySlug(slug);
+  let client = getClientByCrmSlug(slug);
   let created = false;
   if (client) {
-    client = updateClient(client.id, { name, domain: domain ?? client.domain, crmClientId: crmClientId ?? client.crm_client_id });
+    client = updateClient(client.id, { name, domain: domain ?? client.domain, crmSlug: slug, crmClientId: crmClientId ?? client.crm_client_id });
   } else {
-    client = createClient({ name, slug, source: 'crm', domain, crmClientId });
+    client = createClient({ name, slug, crmSlug: slug, source: 'crm', domain, crmClientId });
     created = true;
   }
-
-  const owners = [payload.ownerEmail, ...(Array.isArray(payload.owners) ? payload.owners : [])]
-    .map((e) => String(e || '').trim().toLowerCase()).filter((e) => e.includes('@'));
-  for (const email of owners) grantAccess(client.id, email);
+  // `owners` in the payload is ignored: customers do not sign in to Beakon.
 
   // The alert address is only set when the CRM gives one and the client has
   // none yet; it still has to be verified by the person at that address, and
@@ -134,7 +131,7 @@ export async function upsertClientFromCrm(payload, { baseUrl }) {
     }
   }
 
-  return { client, created, owners, verificationSent, monitors, monitorCount: listMonitorsForClient(client.id).length };
+  return { client, created, verificationSent, monitors, monitorCount: listMonitorsForClient(client.id).length };
 }
 
 export function clientStatusForCrm(client) {
@@ -142,5 +139,5 @@ export function clientStatusForCrm(client) {
     id: m.id, name: m.name, url: m.url, type: m.type, active: Boolean(m.active), status: m.last_status,
     lastCheckedAt: m.last_checked_at, responseMs: m.last_response_ms, sslExpiresAt: m.ssl_expires_at, source: m.source,
   }));
-  return { client: { id: client.id, slug: client.slug, name: client.name, domain: client.domain, placeId: client.place_id || null, alertEmail: client.alert_email, alertVerified: Boolean(client.alert_email_verified_at), alertsEnabled: Boolean(client.alerts_enabled) }, monitors, search: searchSummary(client.id) };
+  return { client: { id: client.id, slug: client.slug, crmSlug: client.crm_slug, name: client.name, domain: client.domain, placeId: client.place_id || null, alertEmail: client.alert_email, alertVerified: Boolean(client.alert_email_verified_at), alertsEnabled: Boolean(client.alerts_enabled) }, monitors, search: searchSummary(client.id) };
 }

@@ -1,6 +1,7 @@
 // src/clients.js
-// Clients: a business whose sites are monitored together, who gets told, and
-// who may look. See the `clients` table comment in db.js.
+// Clients: a business whose sites are monitored together, and who gets told.
+// See the `clients` table comment in db.js. Customers do not sign in here —
+// they get an Uptime Kuma status page — so there is no access model.
 import crypto from 'node:crypto';
 import { db, now } from './db.js';
 import { sendVerificationEmail } from './mailer.js';
@@ -25,20 +26,50 @@ export function getClientBySlug(slug) {
   return db.prepare('SELECT * FROM clients WHERE slug = ?').get(slug) || null;
 }
 
-export function createClient({ name, slug, source = 'admin', domain = null, crmClientId = null, alertEmail = null, alertChannel = 'email' }) {
+/** Normalise a CRM slug: the CRM's own rule is lowercase, digits, single hyphens. */
+export function normalizeCrmSlug(v) {
+  const s = String(v || '').trim().toLowerCase();
+  if (!s) return null;
+  if (!/^[a-z0-9]+(-[a-z0-9]+)*$/.test(s)) throw new Error('CRM slug must be lowercase letters, digits and single hyphens, e.g. "joes-barber"');
+  return s;
+}
+
+/**
+ * Find the client the CRM means by a slug: crm_slug first (the field that
+ * exists for exactly this), then Beakon's own slug (onboarding made them equal).
+ */
+export function getClientByCrmSlug(slug) {
+  const s = String(slug || '').toLowerCase();
+  if (!s) return null;
+  return db.prepare('SELECT * FROM clients WHERE crm_slug = ?').get(s)
+    || db.prepare('SELECT * FROM clients WHERE slug = ? AND crm_slug IS NULL').get(s)
+    || null;
+}
+
+function assertCrmSlugFree(crmSlug, exceptId = null) {
+  if (!crmSlug) return;
+  const other = db.prepare('SELECT id, name FROM clients WHERE crm_slug = ? AND id != ?').get(crmSlug, exceptId ?? -1);
+  if (other) throw new Error(`CRM slug "${crmSlug}" is already on client "${other.name}"`);
+}
+
+export function createClient({ name, slug, crmSlug = null, source = 'admin', domain = null, crmClientId = null, alertEmail = null, alertChannel = 'email' }) {
   const finalSlug = uniqueSlug(slugify(slug || name));
+  const crm = normalizeCrmSlug(crmSlug);
+  assertCrmSlugFree(crm);
   const info = db.prepare(`
-    INSERT INTO clients (slug, name, crm_client_id, domain, source, alert_email, alert_channel, alerts_enabled, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)
-  `).run(finalSlug, String(name).trim().slice(0, 120), crmClientId, domain, source, alertEmail ? alertEmail.toLowerCase() : null, alertChannel, now());
+    INSERT INTO clients (slug, name, crm_slug, crm_client_id, domain, source, alert_email, alert_channel, alerts_enabled, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+  `).run(finalSlug, String(name).trim().slice(0, 120), crm, crmClientId, domain, source, alertEmail ? alertEmail.toLowerCase() : null, alertChannel, now());
   return getClient(info.lastInsertRowid);
 }
 
-export function updateClient(id, { name, domain, crmClientId }) {
+export function updateClient(id, { name, domain, crmSlug, crmClientId }) {
   const c = getClient(id);
   if (!c) return null;
-  db.prepare('UPDATE clients SET name = ?, domain = ?, crm_client_id = ? WHERE id = ?')
-    .run(name ?? c.name, domain ?? c.domain, crmClientId ?? c.crm_client_id, id);
+  const crm = crmSlug === undefined ? c.crm_slug : normalizeCrmSlug(crmSlug);
+  assertCrmSlugFree(crm, id);
+  db.prepare('UPDATE clients SET name = ?, domain = ?, crm_slug = ?, crm_client_id = ? WHERE id = ?')
+    .run(name ?? c.name, domain ?? c.domain, crm, crmClientId ?? c.crm_client_id, id);
   return getClient(id);
 }
 
@@ -47,66 +78,9 @@ export function listClients() {
   return db.prepare(`
     SELECT c.*,
       (SELECT COUNT(*) FROM monitors m WHERE m.client_id = c.id) AS monitor_count,
-      (SELECT COUNT(*) FROM monitors m WHERE m.client_id = c.id AND m.active = 1 AND m.last_status = 'down') AS down_count,
-      (SELECT COUNT(*) FROM client_users cu WHERE cu.client_id = c.id) AS user_count
+      (SELECT COUNT(*) FROM monitors m WHERE m.client_id = c.id AND m.active = 1 AND m.last_status = 'down') AS down_count
     FROM clients c ORDER BY c.name COLLATE NOCASE
   `).all();
-}
-
-/** The clients this user may open: all for admins, else their grants. */
-export function listClientsForUser(user, isAdmin) {
-  if (isAdmin) return listClients();
-  return db.prepare(`
-    SELECT c.* FROM clients c
-    JOIN client_users cu ON cu.client_id = c.id
-    WHERE cu.user_id = ? OR lower(cu.email) = ?
-    GROUP BY c.id ORDER BY c.name COLLATE NOCASE
-  `).all(user.id, (user.email || '').toLowerCase());
-}
-
-export function userCanAccess(user, isAdmin, clientId) {
-  if (isAdmin) return Boolean(getClient(clientId));
-  return Boolean(db.prepare(`
-    SELECT 1 FROM client_users WHERE client_id = ? AND (user_id = ? OR lower(email) = ?)
-  `).get(clientId, user.id, (user.email || '').toLowerCase()));
-}
-
-/** Self-serve users get one client of their own, created on first use. */
-export function ensurePersonalClient(user) {
-  const existing = listClientsForUser(user, false);
-  if (existing.length) return existing[0];
-  const email = (user.email || '').toLowerCase();
-  const client = createClient({
-    name: email, slug: `user-${user.id}`, source: 'user',
-    alertEmail: user.alert_email || email,
-  });
-  // Their login email is one they demonstrably control.
-  if ((client.alert_email || '') === email) {
-    db.prepare('UPDATE clients SET alert_email_verified_at = ? WHERE id = ?').run(now(), client.id);
-  }
-  grantAccess(client.id, email, user.id);
-  return getClient(client.id);
-}
-
-export function grantAccess(clientId, email, userId = null) {
-  const e = String(email || '').trim().toLowerCase();
-  if (!e.includes('@')) throw new Error('invalid email');
-  const uid = userId ?? (db.prepare('SELECT id FROM users WHERE email = ?').get(e)?.id ?? null);
-  db.prepare(`
-    INSERT INTO client_users (client_id, email, user_id, role, created_at) VALUES (?, ?, ?, 'owner', ?)
-    ON CONFLICT(client_id, email) DO UPDATE SET user_id = COALESCE(excluded.user_id, client_users.user_id)
-  `).run(clientId, e, uid, now());
-}
-
-export function revokeAccess(clientId, email) {
-  db.prepare('DELETE FROM client_users WHERE client_id = ? AND lower(email) = ?').run(clientId, String(email).toLowerCase());
-}
-
-export function listClientUsers(clientId) {
-  return db.prepare(`
-    SELECT cu.*, u.last_login_at FROM client_users cu LEFT JOIN users u ON u.id = cu.user_id
-    WHERE cu.client_id = ? ORDER BY cu.email
-  `).all(clientId);
 }
 
 /**

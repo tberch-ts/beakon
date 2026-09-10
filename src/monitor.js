@@ -26,19 +26,14 @@ async function checkBuiltin(m) {
 }
 
 async function sweep() {
-  const rows = db.prepare(`
-    SELECT m.*, u.plan AS u_plan, u.subscription_status AS u_sub, u.trial_ends_at AS u_trial
-    FROM monitors m LEFT JOIN users u ON u.id = m.user_id
-    WHERE m.active = 1
-  `).all();
+  const rows = db.prepare('SELECT * FROM monitors WHERE active = 1').all();
   const kumaLive = isKumaEnabled() && kuma?.isReady();
   let checked = 0;
   for (const row of rows) {
     // Kuma owns anything it has a twin for; the sweeper covers the rest.
     if (kumaLive && row.kuma_monitor_id) continue;
     if (row.type !== 'http' && row.type !== 'keyword') continue; // Kuma-only types
-    const owner = row.user_id ? { plan: row.u_plan, subscription_status: row.u_sub, trial_ends_at: row.u_trial } : null;
-    if (!desiredActive(row, owner)) continue;
+    if (!desiredActive(row)) continue;
     try {
       await checkBuiltin(row);
       checked++;
