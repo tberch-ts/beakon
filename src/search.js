@@ -24,14 +24,34 @@ const TIMEOUT_MS = parseInt(process.env.HTTP_TIMEOUT_MS || '15000', 10);
 const MAX_BODY = 1_500_000;
 const SAMPLE_PAGES = 10;      // sitemap URLs fetched with bodies, beyond the homepage
 const MAX_SITES_PER_CLIENT = 5;
-const UA = 'BeakonSearch/1.0 (+https://beakon.app; search-ladder)';
+// Browser-shaped, and still says who it is. The bare "BeakonSearch/1.0" was
+// refused outright by Cloudflare, Wix and Shopify bot protection on several
+// client sites, so the homepage "failed" and every check below it was marked
+// failed with it: a grade of 0 for a site that was fine. Googlebot is let
+// through those same filters by verified IP, which we cannot imitate, so the
+// next best is to look like the browser a customer uses.
+const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36 (compatible; BeakonSearch/1.1; +https://beakon.app)';
 
 // ---------------------------------------------------------------------------
 // Fetching
 // ---------------------------------------------------------------------------
 
+/**
+ * GET a URL, retrying once when the host says "slow down" (429, or a 503 with
+ * Retry-After). Sampling ten pages four at a time is enough to trip the rate
+ * limit on small shared hosts, and a rate-limited page used to read as a
+ * broken page in "Sitemap URLs return 200".
+ */
+export async function fetchPage(url, opts = {}) {
+  const first = await fetchOnce(url, opts);
+  const slowDown = first.status === 429 || (first.status === 503 && first.headers['retry-after']);
+  if (!slowDown) return first;
+  await new Promise((r) => setTimeout(r, 2000));
+  return fetchOnce(url, opts);
+}
+
 /** GET a URL and return { ok, status, finalUrl, headers, body, ms, error }. */
-export async function fetchPage(url, { body = true } = {}) {
+async function fetchOnce(url, { body = true } = {}) {
   const started = Date.now();
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
@@ -94,6 +114,33 @@ function tags(html, name) {
   return html.match(new RegExp(`<${name}\\b[^>]*>`, 'gi')) || [];
 }
 
+/**
+ * How many main headings a visitor actually sees.
+ *
+ * Site builders ship the page more than once: a <template> or <noscript> copy,
+ * a mobile and a desktop header with the same <h1> text where one is hidden by
+ * CSS. Counting every "<h1" in the source failed "exactly one H1" on sites that
+ * plainly have one. So copies inside template/noscript/script/comments are not
+ * counted, and h1s with the same text count once. Two DIFFERENT h1s still
+ * count as two, which is the thing the check is for.
+ */
+export function countH1(html) {
+  const visible = String(html || '')
+    .replace(/<!--[\s\S]*?-->/g, ' ')
+    .replace(/<(template|noscript|script|style)\b[\s\S]*?<\/\1>/gi, ' ');
+  const texts = new Set();
+  let unlabeled = 0;
+  for (const m of visible.matchAll(/<h1\b[^>]*>([\s\S]*?)<\/h1>/gi)) {
+    const text = decode(m[1].replace(/<[^>]+>/g, ' ')).replace(/\s+/g, ' ').trim().toLowerCase();
+    if (text) texts.add(text);
+    else unlabeled++;
+  }
+  // An <h1> that never closes (malformed builder output) still counts once.
+  const opened = (visible.match(/<h1\b[^>]*>/gi) || []).length;
+  const closed = (visible.match(/<\/h1>/gi) || []).length;
+  return texts.size + Math.min(unlabeled, 1) + Math.max(0, opened - closed);
+}
+
 /** Pull the facts the checks need out of one HTML document. */
 export function readHtml(html, pageUrl) {
   const head = html.slice(0, 400_000);
@@ -103,7 +150,7 @@ export function readHtml(html, pageUrl) {
   const canonical = links.filter((t) => /\brel\s*=\s*["']?canonical/i.test(t)).map((t) => attr(t, 'href')).filter(Boolean);
   const titleM = head.match(/<title\b[^>]*>([\s\S]*?)<\/title>/i);
   const htmlTag = html.match(/<html\b[^>]*>/i)?.[0] || '';
-  const h1s = (html.match(/<h1\b[^>]*>/gi) || []).length;
+  const h1s = countH1(html);
   const jsonld = [];
   for (const m of html.matchAll(/<script\b[^>]*type\s*=\s*["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi)) {
     try { jsonld.push(JSON.parse(m[1].trim())); } catch { /* malformed block: ignore, the check will fail on its own */ }
@@ -303,6 +350,25 @@ export async function findPlaceForBusiness(name, host, hint = '') {
 // The analysis of one site
 // ---------------------------------------------------------------------------
 
+/**
+ * Why a homepage answer looks like bot protection rather than an outage, or null.
+ * Cloudflare, Sucuri, Akamai, DataDome and the hosted builders all answer a
+ * robot with one of these statuses and a page that names itself.
+ */
+export function isBotBlock(res) {
+  if (!res || ![401, 403, 429, 503].includes(res.status)) return null;
+  const h = res.headers || {};
+  const server = String(h.server || '').toLowerCase();
+  const body = String(res.body || '').slice(0, 20000).toLowerCase();
+  if (h['cf-mitigated'] || /cloudflare/.test(server) && /challenge|attention required|just a moment/.test(body)) return 'Cloudflare bot protection';
+  if (/sucuri/.test(server) || /sucuri website firewall/.test(body)) return 'Sucuri firewall';
+  if (/akamai/.test(server) || /reference #\d+\.[0-9a-f]+/.test(body)) return 'Akamai';
+  if (h['x-datadome'] || /datadome/.test(body)) return 'DataDome';
+  if (/captcha|are you a robot|access denied|bot detection|request blocked/.test(body)) return `HTTP ${res.status} with a bot check`;
+  if (res.status === 429) return 'rate limited';
+  return null;
+}
+
 const pass = (detail) => ({ ok: true, detail });
 const fail = (detail) => ({ ok: false, detail });
 const short = (urls, n = 3) => urls.slice(0, n).map((u) => u.replace(/^https?:\/\/[^/]+/, '') || '/').join(', ') + (urls.length > n ? ` +${urls.length - n} more` : '');
@@ -331,8 +397,16 @@ export async function analyzeSite(domain, { placeId = null, reviewUrl = null, bu
   }
 
   if (!origin) {
-    // Nothing else can be checked without a homepage; mark every other check as failed with the reason.
-    for (const id of Object.keys(CHECKS)) if (!checks[id]) checks[id] = fail('homepage unreachable');
+    // Nothing else can be checked without a homepage. But "Beakon was refused"
+    // is not "the site is down": a 401/403/429/503 with a challenge page means
+    // HTTPS works and a person gets the site. Saying so is the difference
+    // between "fix your hosting" and "check this one by hand".
+    const blocked = isBotBlock(home);
+    if (blocked) checks.https_ok = pass(`answered ${home.status} to Beakon over HTTPS (${blocked}) — the site is up`);
+    const why = blocked
+      ? `not checked: the site refused Beakon (${blocked}). Check by hand, or allow BeakonSearch in the bot protection settings`
+      : 'homepage unreachable';
+    for (const id of Object.keys(CHECKS)) if (!checks[id]) checks[id] = fail(why);
     checks.gbp_listed = placeId ? pass(`Place ID ${placeId}`) : isReviewLink(reviewUrl) ? pass(`review link on record: ${reviewUrl}`) : fail('no Place ID or review link on record');
     return { domain: inputHost, origin: null, checks, pages: [], sitemap: null, home: { status: home.status, error: home.error }, ms: Date.now() - started };
   }
@@ -344,6 +418,10 @@ export async function analyzeSite(domain, { placeId = null, reviewUrl = null, bu
   variants.forEach((v, i) => {
     const r = variantResults[i];
     if (r.error && /ENOTFOUND|EAI_AGAIN|getaddrinfo/i.test(r.error)) return; // hostname does not exist: not a duplicate
+    // Nothing listening on http:// is not a second copy of the site either:
+    // Google cannot index what does not answer. (A www with a bad certificate
+    // still fails below -- visitors who type www get a browser warning.)
+    if (r.error && /^http:/.test(v) && /ECONNREFUSED|ECONNRESET|EHOSTUNREACH/i.test(r.error)) return;
     if (r.error) { stray.push(`${v} → ${r.error}`); return; }
     let fh = '';
     try { fh = new URL(r.finalUrl).host.toLowerCase(); } catch { /* ignore */ }
@@ -380,7 +458,8 @@ export async function analyzeSite(domain, { placeId = null, reviewUrl = null, bu
   const offHost = sitemap.urls.filter((u) => { try { return new URL(u).host.toLowerCase() !== host; } catch { return true; } });
   const sameHost = sitemap.urls.filter((u) => !offHost.includes(u));
   const sampleUrls = sameHost.filter((u) => u.replace(/\/$/, '') !== home.finalUrl.replace(/\/$/, '')).slice(0, SAMPLE_PAGES);
-  const sampled = await mapLimit(sampleUrls, 4, (u) => fetchPage(u));
+  // Two at a time: four tripped rate limits on small shared hosts.
+  const sampled = await mapLimit(sampleUrls, 2, (u) => fetchPage(u));
   const pages = [homeDoc];
   const badUrls = [];
   sampleUrls.forEach((u, i) => {
@@ -581,9 +660,15 @@ export async function analyzeClient(client, { placeId = null, reviewUrl = null, 
   if (!hosts.length) throw new Error('no site to analyze — give the client a domain or a monitor first');
   const primaryHost = (() => { try { return client.domain ? new URL(normalizeUrl(client.domain)).hostname.toLowerCase() : hosts[0]; } catch { return hosts[0]; } })();
 
+  // The sites are fetched two at a time and graded in order. One after another
+  // took a client with three slow sites past the CRM's 90-second wait, and the
+  // operator saw an error over an audit that was about to finish.
+  const results = await mapLimit(hosts, 2, (host) =>
+    analyzeSite(host, { placeId: client.place_id, reviewUrl: client.review_url, businessName: client.name }),
+  );
   const sites = [];
-  for (const host of hosts) {
-    const result = await analyzeSite(host, { placeId: client.place_id, reviewUrl: client.review_url, businessName: client.name });
+  for (const [i, host] of hosts.entries()) {
+    const result = results[i];
     if (result.place?.placeId && !client.place_id) {
       db.prepare('UPDATE clients SET place_id = ? WHERE id = ?').run(result.place.placeId, client.id);
       client = getClient(client.id);

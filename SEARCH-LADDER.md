@@ -95,3 +95,28 @@ honest:
 - So we sit on **rung 0 → 1 pending GBP**, despite most of rungs 2–4 already
   passing. That is the ladder doing its job: the highest-leverage missing piece
   is the cheapest one, and it is not a code change.
+
+## When a check fails but the site looks fine
+
+Four ways the analyzer used to fail a good site, and what it does now
+(`src/search.js`, tests in `test/search.test.js`, `npm test`):
+
+- **Bot protection.** Cloudflare, Wix and Shopify refused the old
+  `BeakonSearch/1.0` user agent, the homepage "failed", and every check under it
+  failed too — grade 0. Beakon now fetches with a browser-shaped user agent
+  that still names itself, and a refusal it recognises (challenge page, 429,
+  WAF page) is reported as *"not checked: the site refused Beakon"* with HTTPS
+  marked as working, instead of *"homepage unreachable"*.
+- **Duplicate H1s.** Builders ship hidden mobile/desktop copies of the same
+  heading, plus `<template>`/`<noscript>` copies. H1s with the same text now
+  count once and those copies are not counted; two *different* H1s still fail.
+- **Rate limits.** Sampled pages are fetched two at a time (was four), and a
+  429 or a 503 with Retry-After is retried once, so a busy shared host no
+  longer fails "Sitemap URLs return 200".
+- **Closed port 80.** Nothing answering on `http://` is not a second address
+  for the site, so it no longer fails "One host".
+
+A client's sites are now analyzed two at a time rather than one after another,
+which keeps a client with several slow sites inside the CRM's wait. The CRM
+also waits it out now: when it stops waiting it says Beakon is still working
+and shows the audit when it lands.
