@@ -46,3 +46,14 @@ test('an attestation is read from its own scope, so a saved tick stays ticked', 
   assert.equal(listAttestations(901, 'other.com').gsc_verified, undefined);
   assert.equal(listAttestations(901, 'other.com').gbp_verified.value, true);
 });
+
+test('the overview counts what is in place on every rung, above the grade too', async () => {
+  const { grade } = await import('../src/searchLadder.js');
+  const { rungSummary } = await import('../src/search.js');
+  const g = grade({ https_ok: { ok: true }, single_host: { ok: true }, indexable: { ok: true }, gbp_listed: { ok: true } }, { gsc_verified: true });
+  const r = rungSummary(g.rungs);
+  assert.equal(r.length, 10);
+  assert.deepEqual(r[0], { rung: 1, name: 'On the map', cleared: false, done: 1, total: 2, failing: 0, missing: 1 });
+  assert.equal(r[1].done, 4);
+  assert.equal(r[1].cleared, true);
+});

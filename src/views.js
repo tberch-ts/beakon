@@ -76,6 +76,16 @@ function layout(title, body, opts = {}) {
   .ladder span { height:10px; border-radius:3px; background:rgba(144,160,192,.2); }
   .ladder span.on { background:var(--green); }
   .ladder span.next { background:var(--amber); }
+  .rungs { display:grid; grid-template-columns:repeat(5, minmax(0, 1fr)); gap:6px; margin-top:10px; }
+  @media (max-width: 720px) { .rungs { grid-template-columns:repeat(2, minmax(0, 1fr)); } }
+  .rungs a { display:block; border:1px solid var(--line); border-radius:8px; padding:6px 8px; color:var(--text); text-decoration:none; font-size:12px; line-height:1.3; }
+  .rungs a:hover { border-color:var(--accent); }
+  .rungs a .n { font-weight:700; }
+  .rungs a .s { color:var(--muted); }
+  .rungs a.cleared { border-color:rgba(34,197,94,.45); background:rgba(34,197,94,.08); }
+  .rungs a.cleared .s { color:#86efac; }
+  .rungs a.next { border-color:rgba(245,158,11,.7); background:rgba(245,158,11,.1); }
+  .rungs a.next .s { color:#fcd34d; }
   .rung { border:1px solid var(--line); border-radius:10px; padding:12px 14px; margin:8px 0; }
   .rung.cleared { border-color:rgba(34,197,94,.4); }
   .rung.next { border-color:rgba(245,158,11,.6); background:rgba(245,158,11,.06); }
@@ -371,7 +381,30 @@ function searchSummaryHtml(c) {
     <div><div>${s.next ? `Next phase: <strong>Rung ${s.next.rung} — ${esc(s.next.name)}</strong> <span class="muted small">(${s.next.failing.length + s.next.missing.length} item(s) to clear)</span>` : '<strong>Top of the ladder.</strong>'}</div>
       <div class="muted small">${esc(s.domain)}${s.sites.length > 1 ? ` + ${s.sites.length - 1} more site(s)` : ''} · analyzed ${new Date(s.analyzedAt * 1000).toLocaleString()}</div></div>
     <div class="auto"><a class="btn secondary small" href="/admin/clients/${c.id}/search">Open report</a> ${analyze}</div>
-  </div>`;
+  </div>
+  ${rungTiles(c.id, s)}`;
+}
+
+/**
+ * Every rung, at a glance, on the front page. Cleared rungs are green, the
+ * next phase amber, and each tile says how much of it is already in place --
+ * so a client who is "0/10" with nine-tenths of the work done reads that way,
+ * instead of looking like a site that does not exist. A tile opens that rung
+ * in the full report.
+ */
+function rungTiles(clientId, s) {
+  if (!s.rungs?.length) return '';
+  return `<div class="rungs">${s.rungs.map((r) => {
+    const isNext = s.next && s.next.rung === r.rung;
+    const state = r.cleared ? 'cleared' : isNext ? 'next' : 'later';
+    // A rung can be all done above a rung that is not: it is real work, but
+    // the ladder only credits it once everything beneath it clears.
+    const status = r.cleared
+      ? r.rung <= s.grade ? '✓ cleared' : `✓ done · counts once rung ${s.next?.rung ?? r.rung} clears`
+      : `${r.done}/${r.total} in place${r.missing ? ` · ${r.missing} to tick` : ''}${r.failing ? ` · ${r.failing} to fix` : ''}`;
+    return `<a class="${state}" href="/admin/clients/${clientId}/search#rung-${r.rung}" title="${esc(RUNGS.find((x) => x.rung === r.rung)?.summary || '')}">
+      <div><span class="n">${r.rung}</span> ${esc(r.name)}</div><div class="s">${status}</div></a>`;
+  }).join('')}</div>`;
 }
 
 /**

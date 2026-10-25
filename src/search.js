@@ -704,7 +704,20 @@ export function searchSummary(clientId) {
     next: primary.graded.next,
     analyzedAt: primary.createdAt,
     sites: audits.map((a) => ({ domain: a.domain, isPrimary: a.isPrimary, grade: a.graded.grade, next: a.graded.next ? { rung: a.graded.next.rung, name: a.graded.next.name } : null, analyzedAt: a.createdAt })),
+    // Every rung of the primary site, for the overview: how much of each is
+    // already in place, including rungs above the grade that are not credited
+    // yet. `done` and `total` count checks and attestations together.
+    rungs: rungSummary(primary.graded.rungs),
   };
+}
+
+/** Pure: per-rung progress, from grade()'s rungs. */
+export function rungSummary(rungs) {
+  return (rungs || []).map((r) => {
+    const def = RUNGS.find((x) => x.rung === r.rung);
+    const total = (def?.checks.length || 0) + (def?.attestations.length || 0);
+    return { rung: r.rung, name: r.name, cleared: r.cleared, done: total - r.failing.length - r.missing.length, total, failing: r.failing.length, missing: r.missing.length };
+  });
 }
 
 /** Everything the CRM needs to render the ladder for one client. */
