@@ -469,6 +469,7 @@ export function searchReportPage({ user, client, report, site, history, flash, p
     <h1>${esc(client.name)} · Search ladder</h1>
     <p class="muted">Signed in as ${esc(user.email)} · <a href="https://${esc(site.domain)}/" target="_blank" rel="noopener">${esc(site.domain)}</a> · analyzed ${new Date(site.analyzedAt * 1000).toLocaleString()} · ${site.pages.length} page(s) read${site.sitemap?.count ? `, ${site.sitemap.count} in the sitemap` : ''}</p>
     ${tabs}
+    ${report.skipped?.length ? `<p class="muted small">Not graded: ${report.skipped.map((k) => esc(k.domain)).join(', ')} — tells Google not to index it, so it is watched for uptime only. Remove the noindex and re-analyze to put it on the ladder.</p>` : ''}
     <div class="card">
       <div class="row" style="align-items:center">
         <div class="auto"><span class="grade">${site.grade}<small>/ ${MAX_RUNG}</small></span></div>

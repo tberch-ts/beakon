@@ -57,3 +57,16 @@ test('the overview counts what is in place on every rung, above the grade too', 
   assert.equal(r[1].done, 4);
   assert.equal(r[1].cleared, true);
 });
+
+test('a site that asks not to be indexed is left off the ladder, unless it is the main one', async () => {
+  const { splitAudits } = await import('../src/search.js');
+  const main = { domain: 'gw.com', isPrimary: true, createdAt: 1, result: { noindex: false } };
+  const app = { domain: 'app.gw.com', isPrimary: false, createdAt: 2, result: { noindex: true } };
+  const oldApp = { domain: 'old.gw.com', isPrimary: false, createdAt: 3, result: {} };
+  const r = splitAudits([main, app, oldApp]);
+  assert.deepEqual(r.graded.map((a) => a.domain), ['gw.com', 'old.gw.com']);
+  assert.deepEqual(r.skipped, [{ domain: 'app.gw.com', analyzedAt: 2, reason: 'noindex' }]);
+  // The main site is graded even when it is noindex: that is the bug to fix.
+  const hidden = { ...main, result: { noindex: true } };
+  assert.deepEqual(splitAudits([hidden, app]).graded.map((a) => a.domain), ['gw.com']);
+});

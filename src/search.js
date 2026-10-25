@@ -549,6 +549,10 @@ export async function analyzeSite(domain, { placeId = null, reviewUrl = null, bu
 
   return {
     domain: inputHost, origin, host, checks, place,
+    // The homepage tells Google to stay out. On a client's main site that is a
+    // problem to fix (rung 2 says so); on any other site of theirs it is a
+    // choice -- a logged-in app, a staging copy -- and the site is not graded.
+    noindex,
     home: { status: home.status, finalUrl: home.finalUrl, ms: home.ms, title: homeDoc.title, description: homeDoc.description },
     pages: pages.map((p) => ({ url: p.url, title: p.title, description: p.description, h1Count: p.h1Count, canonical: p.canonical[0] || null })),
     sitemap: { url: sitemap.url, count: sitemap.urls.length, offHost: offHost.length, newestLastmod: sitemap.lastmods.sort().pop() || null },
@@ -693,9 +697,29 @@ export async function analyzeClient(client, { placeId = null, reviewUrl = null, 
   return { client, primary, sites, ranAt: now(), setBy };
 }
 
+/**
+ * Pure: which audits make up the ladder, and which sites sit outside it.
+ *
+ * A site that is not the client's primary one and tells Google not to index
+ * it (an app behind a login, a staging copy) is skipped: grading it would show
+ * a failing ladder for pages nobody wants found. Uptime monitoring is not
+ * affected. The primary site is always graded -- noindex there is the thing to
+ * fix, not a reason to look away.
+ */
+export function splitAudits(audits) {
+  const isSkipped = (a) => !a.isPrimary && Boolean(a.result?.noindex);
+  const graded = audits.filter((a) => !isSkipped(a));
+  const skipped = audits.filter(isSkipped).map((a) => ({ domain: a.domain, analyzedAt: a.createdAt, reason: 'noindex' }));
+  return graded.length ? { graded, skipped } : { graded: audits, skipped: [] };
+}
+
+function currentAudits(clientId) {
+  return splitAudits(latestAudits(clientId).map(regrade));
+}
+
 /** Compact summary of the latest audits, for the CRM and the admin list. */
 export function searchSummary(clientId) {
-  const audits = latestAudits(clientId).map(regrade);
+  const audits = currentAudits(clientId).graded;
   if (!audits.length) return null;
   const primary = audits.find((a) => a.isPrimary) || audits[0];
   return {
@@ -722,8 +746,10 @@ export function rungSummary(rungs) {
 
 /** Everything the CRM needs to render the ladder for one client. */
 export function searchReportForCrm(clientId) {
-  const audits = latestAudits(clientId).map(regrade);
+  const { graded: audits, skipped } = currentAudits(clientId);
   return {
+    // Sites watched for uptime but deliberately kept out of search.
+    skipped,
     ladder: RUNGS.map((r) => ({ rung: r.rung, id: r.id, name: r.name, summary: r.summary, why: r.why || null, checks: r.checks, attestations: r.attestations })),
     checks: CHECKS,
     attestations: ATTESTATIONS,
