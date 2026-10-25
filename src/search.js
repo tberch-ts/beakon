@@ -565,8 +565,18 @@ const BUSINESS_SCOPE = '*';
 /** Attestations for a client + site, as { key: { value, note, set_by, set_at } }. Business-scoped ones apply to every site. */
 export function listAttestations(clientId, domain) {
   const rows = db.prepare('SELECT * FROM search_attestations WHERE client_id = ? AND (scope_key = ? OR scope_key = ?)').all(clientId, BUSINESS_SCOPE, domain || '');
+  // Each attestation is read from its own scope only. A business one stored
+  // against a domain (older data, or a site that was renamed) used to sit in
+  // the same result as the real one, and whichever row came back last won --
+  // so a box could read as unticked right after it was saved.
   const out = {};
-  for (const r of rows) out[r.key] = { value: Boolean(r.value), note: r.note, set_by: r.set_by, set_at: r.set_at };
+  for (const r of rows) {
+    const def = ATTESTATIONS[r.key];
+    if (!def) continue;
+    const wanted = def.scope === 'business' ? BUSINESS_SCOPE : (domain || '');
+    if (r.scope_key !== wanted) continue;
+    out[r.key] = { value: Boolean(r.value), note: r.note, set_by: r.set_by, set_at: r.set_at };
+  }
   return out;
 }
 
