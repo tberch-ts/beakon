@@ -31,3 +31,18 @@ test('bot protection is told apart from an outage', () => {
   assert.equal(isBotBlock({ status: 500, headers: { server: 'cloudflare' }, body: 'Just a moment' }), null);
   assert.equal(isBotBlock({ status: 403, headers: {}, body: '<h1>Forbidden</h1>' }), null);
 });
+
+test('an attestation is read from its own scope, so a saved tick stays ticked', async () => {
+  const { db } = await import('../src/db.js');
+  const { setAttestations, listAttestations } = await import('../src/search.js');
+  const t = Math.floor(Date.now() / 1000);
+  // A stale row for a business attestation filed under the domain.
+  db.prepare('INSERT OR REPLACE INTO search_attestations (client_id, scope_key, key, value, set_at) VALUES (?, ?, ?, 0, ?)').run(901, 'shop.com', 'gbp_verified', t);
+  setAttestations(901, 'shop.com', { gbp_verified: true, gsc_verified: true });
+  const a = listAttestations(901, 'shop.com');
+  assert.equal(a.gbp_verified.value, true);
+  assert.equal(a.gsc_verified.value, true);
+  // A site attestation does not leak to the client's other site.
+  assert.equal(listAttestations(901, 'other.com').gsc_verified, undefined);
+  assert.equal(listAttestations(901, 'other.com').gbp_verified.value, true);
+});

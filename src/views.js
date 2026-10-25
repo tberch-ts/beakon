@@ -403,7 +403,7 @@ export function searchReportPage({ user, client, report, site, history, flash, p
     const on = Boolean(a?.value);
     const def = ATTESTATIONS[id];
     return `<div class="item"><span class="mark ${on ? 'ok' : 'todo'}">${on ? '✓' : '☐'}</span><div>
-      <label><input type="checkbox" name="att_${id}" ${on ? 'checked' : ''}> <span>${esc(def.label)} <span class="pill ${def.scope === 'business' ? 'info' : 'unknown'}" title="${def.scope === 'business' ? 'about the business — shared by all its sites' : 'about this site only'}">${def.scope}</span></span></label>
+      <label><input type="checkbox" name="att_${id}" ${on ? 'checked' : ''} onchange="this.form.requestSubmit()"> <span>${esc(def.label)} <span class="pill ${def.scope === 'business' ? 'info' : 'unknown'}" title="${def.scope === 'business' ? 'about the business — shared by all its sites' : 'about this site only'}">${def.scope}</span></span></label>
       <div class="fix">${esc(def.how)}${a?.set_at ? ` <span class="muted">· ${on ? 'confirmed' : 'cleared'} ${new Date(a.set_at * 1000).toLocaleDateString()}${a.set_by ? ' by ' + esc(a.set_by) : ''}</span>` : ''}</div></div></div>`;
   };
 
@@ -423,7 +423,7 @@ export function searchReportPage({ user, client, report, site, history, flash, p
       <h2>Next phase: Rung ${site.next.rung} — ${esc(site.next.name)}</h2>
       <p class="muted">${esc(site.next.summary)} ${site.next.why ? esc(site.next.why) : ''}</p>
       ${site.next.failing.length ? `<h3>Fix on the site</h3>${site.next.failing.map(checkItem).join('')}` : ''}
-      ${site.next.missing.length ? `<h3>Confirm in Google, then tick below</h3><ul>${site.next.missing.map((id) => `<li>${esc(ATTESTATIONS[id].label)} <span class="muted small">— ${esc(ATTESTATIONS[id].how)}</span></li>`).join('')}</ul>` : ''}
+      ${site.next.missing.length ? `<h3>Confirm in Google, then tick it</h3><ul>${site.next.missing.map((id) => `<li><a href="#rung-${site.next.rung}">${esc(ATTESTATIONS[id].label)}</a> <span class="muted small">— ${esc(ATTESTATIONS[id].how)}</span></li>`).join('')}</ul>` : ''}
     </div>` : `<div class="card"><h2>Top of the ladder</h2><p class="muted">Every rung is cleared. Keep the monthly review on the calendar.</p></div>`;
 
   const ahead = site.ahead.length ? `<p class="muted small">Already in place higher up (not credited until the rungs below clear): ${site.ahead.map((a) => `rung ${a.rung} ${esc(a.label)}`).join(' · ')}.</p>` : '';
@@ -449,13 +449,13 @@ export function searchReportPage({ user, client, report, site, history, flash, p
       <input type="hidden" name="domain" value="${esc(site.domain)}">
       <div class="card">
         <h2>Every rung</h2>
-        <p class="muted small">Ticks are attestations: things you confirmed by looking in Google. Save re-grades instantly without re-fetching the site.</p>
+        <p class="muted small">Ticks are attestations: things you confirmed by looking in Google. Ticking or unticking a box saves it and re-grades straight away, without re-fetching the site.</p>
         ${rungBlocks}
         <h3>Business Profile</h3>
         <div class="row">
           <div><label>Place ID</label><input name="place_id" value="${esc(client.place_id || '')}" placeholder="ChIJ…"></div>
           <div><label>Review link</label><input name="review_url" value="${esc(client.review_url || '')}" placeholder="https://g.page/r/…/review"></div>
-          <div class="auto"><label>&nbsp;</label><button class="secondary">Save ticks + profile</button></div>
+          <div class="auto"><label>&nbsp;</label><button class="secondary">Save profile</button></div>
         </div>
         <p class="muted small">Either one proves the profile exists and clears "Business Profile located". The CRM sends both when it has them (the card's review link, the sale's Place ID).${placesConfigured ? ' With both blank, Beakon searches Google Places for the business name and accepts a result whose website is on this domain or its parent domain.' : ' Set GOOGLE_PLACES_API_KEY to have Beakon look the profile up by name.'}</p>
       </div>
