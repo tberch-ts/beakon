@@ -1,11 +1,13 @@
 // src/server.js
 // Express app: the operator's monitoring and search console.
 //
-// Beakon is an internal tool. The only people who sign in are the marketing
-// CRM's admins (the `admin` custom claim on the shared Firebase project); the
-// only machine that talks to it is the CRM, with a shared secret. Customers see
-// an Uptime Kuma status page, not this. There is no billing, no plan, no limit:
-// Beakon watches and grades whatever the CRM tells it to.
+// Two kinds of people sign in, both with Google through the CRM's Firebase
+// project: the marketing CRM's admins (its `admin` custom claim) get the whole
+// console at /admin; a client's owner (an email granted on that client, by the
+// CRM at onboarding or by an admin) gets their own client, read-only, at /app.
+// The only machine that talks to it is the CRM, with a shared secret. There is
+// no billing, no plan, no limit: Beakon watches and grades whatever the CRM
+// tells it to.
 import 'dotenv/config';
 import express from 'express';
 import session from 'express-session';
@@ -16,10 +18,11 @@ import { fileURLToPath } from 'node:url';
 import { db } from './db.js';
 import { startScheduler } from './monitor.js';
 import {
-  firebaseWebConfig, isFirebaseEnabled, verifyIdToken, findOrCreateUserFromFirebase, isAdminUser, getSessionUser, requireAdmin,
+  firebaseWebConfig, isFirebaseEnabled, verifyIdToken, findOrCreateUserFromFirebase, isAdminUser, getSessionUser, requireLogin, requireAdmin,
 } from './auth.js';
 import {
   getClient, getClientByCrmSlug, listClients, createClient, updateClient, updateAlertSettings, resendVerification, verifyAlertToken, deleteClient,
+  listClientsForUser, userCanAccess, grantAccess, revokeAccess, listClientUsers, confirmAlertEmailBySignIn,
 } from './clients.js';
 import {
   getMonitor, listMonitorsForClient, listAllMonitors, recentEvents, createMonitor,
@@ -28,7 +31,7 @@ import {
 import { kuma, isKumaEnabled, availableMonitorTypes } from './kuma.js';
 import { isMailConfigured } from './mailer.js';
 import { crmWebhookAuth, upsertClientFromCrm, clientStatusForCrm, isCrmSignalConfigured, isCrmWebhookConfigured } from './crm.js';
-import { loginPage, forbiddenPage, adminPage, verifyPage, searchReportPage } from './views.js';
+import { loginPage, forbiddenPage, clientPage, adminPage, verifyPage, searchReportPage } from './views.js';
 import { analyzeClient, searchSummary, searchReportForCrm, setAttestations, auditHistory, isPlacesConfigured, isReviewLink } from './search.js';
 import { ATTESTATIONS } from './searchLadder.js';
 
@@ -58,28 +61,37 @@ function flash(req, msg, kind = 'ok') { req.session.flash = { msg, kind }; }
 function takeFlash(req) { const f = req.session.flash; delete req.session.flash; return f || null; }
 
 // ---- Root ----
-app.get('/', (req, res) => res.redirect(req.session.userId ? '/admin' : '/login'));
-app.get('/app', (req, res) => res.redirect('/admin'));
+app.get('/', (req, res) => {
+  const user = getSessionUser(req);
+  if (!user) return res.redirect('/login');
+  res.redirect(isAdminUser(user) ? '/admin' : '/app');
+});
 app.get('/healthz', (req, res) => res.json({
   ok: true,
   kuma: isKumaEnabled() ? (kuma?.isReady() ? 'connected' : 'disconnected') : 'disabled',
 }));
 
-// ---- Auth: Google, via the CRM's Firebase project. Admins only. ----
+// ---- Auth: Google, via the CRM's Firebase project ----
 app.get('/login', (req, res) => {
   const user = getSessionUser(req);
-  if (user && isAdminUser(user)) return res.redirect('/admin');
+  if (user) return res.redirect(isAdminUser(user) ? '/admin' : '/app');
   res.send(loginPage({ firebaseConfig: isFirebaseEnabled() ? firebaseWebConfig() : null, error: req.query.error }));
 });
 
 // The browser signed in with Firebase; exchange the ID token for a session.
-// Non-admins get a session too, so /admin can tell them plainly why not.
+// Admins land on the console, everyone else on /app, which says plainly when
+// there is nothing for them.
 app.post('/auth/firebase', async (req, res) => {
   try {
     const decoded = await verifyIdToken(String(req.body.idToken || ''));
     const user = findOrCreateUserFromFirebase(decoded);
     req.session.userId = user.id;
-    res.json({ ok: true, redirect: '/admin' });
+    // Google vouched for this address, which is all the confirmation link
+    // asks for: any client whose alert address is this email is confirmed now.
+    if (decoded.email_verified !== false) {
+      for (const id of confirmAlertEmailBySignIn(user)) syncClientMonitorsToKuma(id).catch(() => {});
+    }
+    res.json({ ok: true, redirect: isAdminUser(user) ? '/admin' : '/app' });
   } catch (err) {
     console.warn('[auth] firebase sign-in failed:', err.message);
     res.status(401).json({ ok: false, error: err.message });
@@ -89,10 +101,12 @@ app.post('/auth/firebase', async (req, res) => {
 app.post('/logout', (req, res) => req.session.destroy(() => res.redirect('/login')));
 app.get('/logout', (req, res) => req.session.destroy(() => res.redirect('/login')));
 
-// Signed in but not a CRM admin.
+// Signed in, but neither a CRM admin nor granted on any client.
 app.get('/forbidden', (req, res) => {
   const user = getSessionUser(req);
   if (!user) return res.redirect('/login');
+  if (isAdminUser(user)) return res.redirect('/admin');
+  if (listClientsForUser(user).length) return res.redirect('/app');
   res.status(403).send(forbiddenPage(user));
 });
 
@@ -101,6 +115,33 @@ app.get('/alerts/verify', (req, res) => {
   const client = verifyAlertToken(String(req.query.token || ''));
   if (client) syncClientMonitorsToKuma(client.id).catch(() => {});
   res.send(verifyPage(Boolean(client), client));
+});
+
+// ---- Client view: an owner sees the client(s) granted to their email ----
+app.get('/app', requireLogin, (req, res) => {
+  if (req.isAdmin) return res.redirect('/admin');
+  const clients = listClientsForUser(req.user);
+  if (!clients.length) return res.status(403).send(forbiddenPage(req.user));
+  const wanted = parseInt(req.query.client, 10);
+  const client = clients.find((c) => c.id === wanted) || clients[0];
+  res.send(clientPage({
+    user: req.user, clients, client,
+    monitors: listMonitorsForClient(client.id),
+    search: searchSummary(client.id),
+    events: recentEvents(15, client.id),
+    mailConfigured: isMailConfigured(),
+    flash: takeFlash(req),
+  }));
+});
+
+// The one thing an owner may do: ask for their confirmation email again.
+app.post('/app/clients/:id/alerts/resend', requireLogin, async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (!userCanAccess(req.user, req.isAdmin, id)) return res.status(403).send('Not your client.');
+  const client = getClient(id);
+  const sent = await resendVerification(client, { baseUrl: BASE_URL });
+  flash(req, sent ? `Confirmation email sent to ${client.alert_email}.` : 'Nothing was sent: the address is already confirmed, or the mail server could not be reached.', sent ? 'ok' : 'warn');
+  res.redirect(`/app?client=${id}`);
 });
 
 // ---- Admin console: every client, every monitor ----
@@ -114,7 +155,7 @@ app.get('/admin', requireAdmin, (req, res) => {
   }
   res.send(adminPage({
     user: req.user,
-    clients: clients.map((c) => ({ ...c, monitors: byClient.get(c.id) || [], search: searchSummary(c.id) })),
+    clients: clients.map((c) => ({ ...c, monitors: byClient.get(c.id) || [], users: listClientUsers(c.id), search: searchSummary(c.id) })),
     orphanMonitors: byClient.get(null) || [],
     monitorTypes: availableMonitorTypes(),
     kuma: {
@@ -178,6 +219,28 @@ app.post('/admin/clients/:id/alerts/resend', requireAdmin, async (req, res) => {
   if (!client) return res.status(404).send('No such client.');
   const sent = await resendVerification(client, { baseUrl: BASE_URL });
   flash(req, sent ? `Verification email sent to ${client.alert_email}.` : 'Nothing to send.', sent ? 'ok' : 'warn');
+  res.redirect('/admin');
+});
+
+// Who may sign in and see this client. The CRM grants its portal users at
+// onboarding; this is for the address it did not know about.
+app.post('/admin/clients/:id/users', requireAdmin, (req, res) => {
+  const client = getClient(parseInt(req.params.id, 10));
+  if (!client) return res.status(404).send('No such client.');
+  try {
+    const email = grantAccess(client.id, req.body.email);
+    flash(req, `${email} can now sign in with Google and see ${client.name}.`);
+  } catch (err) {
+    flash(req, `Could not grant access: ${err.message}`, 'err');
+  }
+  res.redirect('/admin');
+});
+
+app.post('/admin/clients/:id/users/remove', requireAdmin, (req, res) => {
+  const client = getClient(parseInt(req.params.id, 10));
+  if (!client) return res.status(404).send('No such client.');
+  revokeAccess(client.id, req.body.email);
+  flash(req, `${String(req.body.email || '').trim().toLowerCase()} can no longer see ${client.name}.`);
   res.redirect('/admin');
 });
 
@@ -282,7 +345,7 @@ app.post('/api/crm/clients', crmWebhookAuth, async (req, res) => {
     res.status(result.created ? 201 : 200).json({
       ok: true, created: result.created,
       client: { id: result.client.id, slug: result.client.slug, crmSlug: result.client.crm_slug, name: result.client.name },
-      owners: [], verificationSent: result.verificationSent, monitors: result.monitors, monitorCount: result.monitorCount,
+      owners: result.owners, verificationSent: result.verificationSent, monitors: result.monitors, monitorCount: result.monitorCount,
       dashboardUrl: `${BASE_URL}/admin`,
     });
   } catch (err) {

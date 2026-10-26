@@ -1,9 +1,9 @@
 # Beakon
 
 **Know before your clients do.** The marketing CRM's console for every client
-site: uptime, SSL expiry, and where the site stands in search. Internal tool —
-the only people who sign in are CRM admins, and the only machine that calls it
-is the CRM. Customers get an Uptime Kuma status page, not this.
+site: uptime, SSL expiry, and where the site stands in search. CRM admins sign
+in to the console; a client's owner signs in with the same Google button and
+sees their own client, read-only; the only machine that calls it is the CRM.
 
 - 1-minute uptime checks (HTTP/HTTPS), via Uptime Kuma or the built-in sweeper
 - SSL certificate expiry warnings (default: 14 days out)
@@ -38,9 +38,13 @@ and is wired to **marketingCRM**: see [UPTIME-KUMA.md](UPTIME-KUMA.md).
   exactly as the CRM has it — and that is how the CRM's calls find it.
 - A new alert address gets one confirmation email; nothing is sent until it is
   clicked. A blank address means alerts are off, quietly.
-- Sign-in is Google via the CRM's Firebase project (`marketingcrm-c5d57`), and
-  **only** the CRM's `admin` claim gets in. `POST /api/crm/clients` is how the
-  CRM creates clients and monitors at onboarding.
+- Sign-in is Google via the CRM's Firebase project (`marketingcrm-c5d57`). The
+  CRM's `admin` claim opens the console. Any other Google account sees exactly
+  the clients its email has been granted on, at `/app`: the CRM grants its
+  portal users as owners at onboarding, and `/admin` → "Who can sign in" grants
+  an address by hand. Signing in with a client's alert address also counts as
+  confirming it. `POST /api/crm/clients` is how the CRM creates clients,
+  owners and monitors at onboarding.
 
 ### The Search Ladder
 

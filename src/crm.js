@@ -8,11 +8,12 @@
 //
 // Inbound: when the CRM onboards a website customer it calls
 // POST /api/crm/clients here with a shared secret, and Beakon creates (or
-// updates) the client and adds a monitor per site. The CRM's slug is stored as
-// crm_slug and is how every later call names the client.
+// updates) the client, grants its owners, and adds a monitor per site. The
+// CRM's slug is stored as crm_slug and is how every later call names the
+// client.
 import crypto from 'node:crypto';
 import { now } from './db.js';
-import { createClient, getClientByCrmSlug, updateClient, updateAlertSettings } from './clients.js';
+import { createClient, getClientByCrmSlug, updateClient, updateAlertSettings, grantAccess } from './clients.js';
 import { createMonitor, findMonitorByUrl, listMonitorsForClient } from './monitors.js';
 import { searchSummary } from './search.js';
 
@@ -102,7 +103,14 @@ export async function upsertClientFromCrm(payload, { baseUrl }) {
     client = createClient({ name, slug, crmSlug: slug, source: 'crm', domain, crmClientId });
     created = true;
   }
-  // `owners` in the payload is ignored: customers do not sign in to Beakon.
+  // The CRM's portal users become this client's owners here: each may sign in
+  // with Google and see this client, and nothing else. Idempotent.
+  const owners = [];
+  for (const raw of [payload.ownerEmail, ...(Array.isArray(payload.owners) ? payload.owners : [])]) {
+    const email = String(raw || '').trim().toLowerCase();
+    if (!email || owners.includes(email)) continue;
+    try { owners.push(grantAccess(client.id, email)); } catch (err) { console.warn(`[crm] owner "${email}" not granted:`, err.message); }
+  }
 
   // The alert address is only set when the CRM gives one and the client has
   // none yet; it still has to be verified by the person at that address, and
@@ -131,7 +139,7 @@ export async function upsertClientFromCrm(payload, { baseUrl }) {
     }
   }
 
-  return { client, created, verificationSent, monitors, monitorCount: listMonitorsForClient(client.id).length };
+  return { client, created, owners, verificationSent, monitors, monitorCount: listMonitorsForClient(client.id).length };
 }
 
 export function clientStatusForCrm(client) {

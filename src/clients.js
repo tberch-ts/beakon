@@ -1,7 +1,8 @@
 // src/clients.js
-// Clients: a business whose sites are monitored together, and who gets told.
-// See the `clients` table comment in db.js. Customers do not sign in here —
-// they get an Uptime Kuma status page — so there is no access model.
+// Clients: a business whose sites are monitored together, who gets told, and
+// who may look. See the `clients` table comment in db.js. A client's owner
+// signs in with Google and sees that client alone: access is a `client_users`
+// row matched on email, so it can be granted before they have ever signed in.
 import crypto from 'node:crypto';
 import { db, now } from './db.js';
 import { sendVerificationEmail } from './mailer.js';
@@ -78,9 +79,81 @@ export function listClients() {
   return db.prepare(`
     SELECT c.*,
       (SELECT COUNT(*) FROM monitors m WHERE m.client_id = c.id) AS monitor_count,
-      (SELECT COUNT(*) FROM monitors m WHERE m.client_id = c.id AND m.active = 1 AND m.last_status = 'down') AS down_count
+      (SELECT COUNT(*) FROM monitors m WHERE m.client_id = c.id AND m.active = 1 AND m.last_status = 'down') AS down_count,
+      (SELECT COUNT(*) FROM client_users cu WHERE cu.client_id = c.id) AS user_count
     FROM clients c ORDER BY c.name COLLATE NOCASE
   `).all();
+}
+
+// ---- Who may look ----
+
+/** The clients this person may open: every one for an admin, else their grants. */
+export function listClientsForUser(user, isAdmin = false) {
+  if (isAdmin) return listClients();
+  return db.prepare(`
+    SELECT c.* FROM clients c
+    JOIN client_users cu ON cu.client_id = c.id
+    WHERE cu.user_id = ? OR lower(cu.email) = ?
+    GROUP BY c.id ORDER BY c.name COLLATE NOCASE
+  `).all(user.id, (user.email || '').toLowerCase());
+}
+
+export function userCanAccess(user, isAdmin, clientId) {
+  if (isAdmin) return Boolean(getClient(clientId));
+  return Boolean(db.prepare(
+    'SELECT 1 FROM client_users WHERE client_id = ? AND (user_id = ? OR lower(email) = ?)',
+  ).get(clientId, user.id, (user.email || '').toLowerCase()));
+}
+
+/**
+ * Let this email open the client. Matched on email so the grant can come
+ * before the person has ever signed in; user_id is filled in now if they
+ * have, else by linkClientGrants on their first sign-in. Returns the email as
+ * stored.
+ */
+export function grantAccess(clientId, email, userId = null) {
+  const e = String(email || '').trim().toLowerCase();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e)) throw new Error('That does not look like an email address.');
+  const uid = userId ?? (db.prepare('SELECT id FROM users WHERE email = ?').get(e)?.id ?? null);
+  db.prepare(`
+    INSERT INTO client_users (client_id, email, user_id, role, created_at) VALUES (?, ?, ?, 'owner', ?)
+    ON CONFLICT(client_id, email) DO UPDATE SET user_id = COALESCE(excluded.user_id, client_users.user_id)
+  `).run(clientId, e, uid, now());
+  return e;
+}
+
+export function revokeAccess(clientId, email) {
+  db.prepare('DELETE FROM client_users WHERE client_id = ? AND lower(email) = ?').run(clientId, String(email || '').trim().toLowerCase());
+}
+
+export function listClientUsers(clientId) {
+  return db.prepare(`
+    SELECT cu.*, u.last_login_at FROM client_users cu LEFT JOIN users u ON u.id = cu.user_id
+    WHERE cu.client_id = ? ORDER BY cu.email
+  `).all(clientId);
+}
+
+/** On sign-in: attach this user to every grant that names their email. */
+export function linkClientGrants(user) {
+  db.prepare('UPDATE client_users SET user_id = ? WHERE lower(email) = ? AND (user_id IS NULL OR user_id != ?)')
+    .run(user.id, (user.email || '').toLowerCase(), user.id);
+}
+
+/**
+ * The person at an alert address has just signed in with it through Google.
+ * That is the proof the confirmation link asks for — the address is theirs —
+ * so every client whose alert address is this email, and still unconfirmed,
+ * is confirmed now. Returns their ids so the caller can push the change to
+ * Kuma.
+ */
+export function confirmAlertEmailBySignIn(user) {
+  const email = (user.email || '').toLowerCase();
+  if (!email) return [];
+  const ids = db.prepare('SELECT id FROM clients WHERE alert_email = ? AND alert_email_verified_at IS NULL').all(email).map((r) => r.id);
+  for (const id of ids) {
+    db.prepare('UPDATE clients SET alert_email_verified_at = ?, alert_verify_token = NULL, alert_verify_expires_at = NULL WHERE id = ?').run(now(), id);
+  }
+  return ids;
 }
 
 /**
