@@ -1,11 +1,13 @@
 // src/auth.js
-// Identity. Beakon has exactly one kind of user: an admin of the marketing CRM.
+// Identity. Sign-in is Google through the SAME Firebase project marketingCRM
+// uses (marketingcrm-c5d57); there is no password login and no admin list here.
 //
-// Sign-in is Google through the SAME Firebase project marketingCRM uses
-// (marketingcrm-c5d57). The CRM's `admin` custom claim (set with its set-admin
-// script) is what makes somebody an admin here — there is no separate admin
-// list, no password login, no customer role. Somebody who signs in without the
-// claim gets a session that can only see /forbidden.
+// Two roles come out of one sign-in:
+//   admin     the CRM's `admin` custom claim (set with its set-admin script).
+//             The whole console.
+//   customer  everyone else. They see exactly the clients whose `client_users`
+//             rows name their email (granted by the CRM at onboarding or by an
+//             admin), and /forbidden if there are none.
 //
 // The browser signs in with the Firebase web SDK and posts the ID token to
 // POST /auth/firebase; this module verifies it with firebase-admin and maps it
@@ -16,6 +18,7 @@
 //   FIREBASE_WEB_API_KEY / FIREBASE_WEB_AUTH_DOMAIN / FIREBASE_WEB_PROJECT_ID /
 //   FIREBASE_WEB_APP_ID             the public web config (browser side)
 import { db, now } from './db.js';
+import { linkClientGrants } from './clients.js';
 
 let adminApp = null;
 let initError = null;
@@ -70,6 +73,7 @@ export async function verifyIdToken(idToken) {
  * Map a verified Firebase identity onto a `users` row: by uid first, then by
  * email, else create. The role is re-read from the claim on every sign-in, so
  * revoking `admin` in the CRM takes effect the next time they sign in here.
+ * Any client_users grant that names this email is attached to the user.
  */
 export function findOrCreateUserFromFirebase(decoded) {
   const email = (decoded.email || '').toLowerCase();
@@ -88,6 +92,7 @@ export function findOrCreateUserFromFirebase(decoded) {
     `).run(email, decoded.uid, role, email, now(), now());
     user = db.prepare('SELECT * FROM users WHERE id = ?').get(info.lastInsertRowid);
   }
+  linkClientGrants(user);
   return db.prepare('SELECT * FROM users WHERE id = ?').get(user.id);
 }
 
@@ -101,7 +106,16 @@ export function getSessionUser(req) {
   return db.prepare('SELECT * FROM users WHERE id = ?').get(req.session.userId) || null;
 }
 
-/** Every human-facing route: a signed-in CRM admin, or a redirect. */
+/** Any signed-in Google account: an admin or a client's owner. */
+export function requireLogin(req, res, next) {
+  const user = getSessionUser(req);
+  if (!user) return res.redirect('/login');
+  req.user = user;
+  req.isAdmin = isAdminUser(user);
+  next();
+}
+
+/** The console: a signed-in CRM admin, or a redirect. */
 export function requireAdmin(req, res, next) {
   const user = getSessionUser(req);
   if (!user) return res.redirect('/login');

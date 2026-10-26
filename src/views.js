@@ -1,6 +1,7 @@
 // src/views.js
 // Minimal server-rendered HTML. No template engine dependency — just functions.
-// Every page here is for a CRM admin; customers never see Beakon.
+// The admin console and the search report are for CRM admins; clientPage is
+// the one screen a client's owner sees.
 import { effectiveAlertMode } from './clients.js';
 import { RUNGS, CHECKS, ATTESTATIONS, MAX_RUNG } from './searchLadder.js';
 
@@ -127,7 +128,7 @@ btn.onclick = async () => {
   return layout('Sign in', `
     <div class="card" style="max-width:420px;margin:40px auto;">
       <h1>Sign in</h1>
-      <p class="muted">Beakon is the operator console. Sign in with the Google account that is an admin in the marketing CRM.</p>
+      <p class="muted">Sign in with Google: the account that is an admin in the marketing CRM, or the one your account manager has on file for your business.</p>
       ${error ? `<div class="err">${esc(error)}</div>` : ''}
       ${google}
       ${!google ? '<p class="err">Sign-in is not configured. Set the FIREBASE_* variables to the CRM project&#39;s values.</p>' : ''}
@@ -135,10 +136,10 @@ btn.onclick = async () => {
 }
 
 export function forbiddenPage(user) {
-  return layout('Not an admin', `
+  return layout('No access yet', `
     <div class="card" style="max-width:480px;margin:40px auto;">
-      <h1>This is the operator console</h1>
-      <p class="muted">You are signed in as <strong>${esc(user.email)}</strong>, which is not an admin in the marketing CRM. Beakon has nothing for customers to see — your site's status page is in Uptime Kuma, and your account manager can send you the link.</p>
+      <h1>Nothing to show you yet</h1>
+      <p class="muted">You are signed in as <strong>${esc(user.email)}</strong>. That account is not an admin in the marketing CRM, and no client has been shared with it. Ask your account manager to grant this Google address on your client; then sign in again and your site will be here.</p>
       <p style="margin-top:16px"><a class="btn secondary" href="/logout">Sign out</a></p>
     </div>`);
 }
@@ -245,6 +246,66 @@ function eventsTable(events, { showClient = false } = {}) {
   </tbody></table>`;
 }
 
+// ---------- Client view ----------
+// What a client's owner sees after signing in: their client, read-only. The
+// one form is "resend my confirmation email"; everything else is the admin's.
+export function clientPage({ user, clients, client, monitors, search, events, mailConfigured, flash }) {
+  const nav = `<span class="muted small">${esc(user.email)}</span><a href="/logout">Sign out</a>`;
+  const switcher = clients.length > 1
+    ? `<p class="tabs">${clients.map((c) => `<a class="${c.id === client.id ? 'on' : ''}" href="/app?client=${c.id}">${esc(c.name)}</a>`).join('')}</p>`
+    : '';
+  const active = monitors.filter((m) => m.active);
+  const down = active.filter((m) => m.last_status === 'down');
+  const headline = !active.length
+    ? '<span class="pill unknown">NOT WATCHED YET</span>'
+    : down.length ? `<span class="pill down">${down.length} DOWN</span>` : '<span class="pill up">ALL UP</span>';
+
+  const rows = monitors.length === 0
+    ? '<p class="muted">Nothing is being watched yet. Your account manager adds sites here.</p>'
+    : `<table><thead><tr><th>Site</th><th>Status</th><th>Response</th><th>SSL</th><th>Last check</th></tr></thead><tbody>
+      ${monitors.map((m) => `<tr>
+        <td><strong>${esc(m.name)}</strong> <span class="pill info">${typeLabel[m.type] || m.type}</span><br><span class="muted small">${esc(target(m))}</span></td>
+        <td>${statusPill(m)}${m.last_error && m.last_status === 'down' ? `<br><span class="muted small">${esc(m.last_error)}</span>` : ''}</td>
+        <td>${m.last_response_ms != null ? m.last_response_ms + ' ms' : '<span class="muted">—</span>'}</td>
+        <td>${fmtSsl(m.ssl_expires_at)}</td>
+        <td>${fmtTime(m.last_checked_at)}</td>
+      </tr>`).join('')}
+    </tbody></table>`;
+
+  const mode = effectiveAlertMode(client);
+  const resend = mode === 'email_unverified'
+    ? `<form method="post" action="/app/clients/${client.id}/alerts/resend" class="inline" style="margin-left:8px"><button class="secondary small">Resend confirmation</button></form>`
+    : '';
+  const alerts = `<p>${alertStatusLine(client, mailConfigured)}${resend}</p>
+    <p class="muted small">${mode === 'email'
+      ? 'You get an email the moment a site goes down, when it comes back, and two weeks before its SSL certificate expires.'
+      : mode === 'email_unverified'
+        ? 'Alerts are set up but not yet confirmed. Open the confirmation email and click the link; if it never arrived, resend it above.'
+        : 'Alerts are off for this client. Your account manager can switch them on.'}</p>`;
+
+  const searchHtml = !search
+    ? '<p class="muted">Not graded yet. Your account manager runs the first analysis.</p>'
+    : `<div class="row" style="align-items:center">
+        <div class="auto"><span class="grade">${search.grade}<small>/ ${MAX_RUNG}</small></span></div>
+        <div>
+          <div>${search.next ? `Next phase: <strong>Rung ${search.next.rung} — ${esc(search.next.name)}</strong>` : '<strong>Top of the ladder.</strong>'}</div>
+          <div class="muted small">${esc(search.domain)}${search.sites.length > 1 ? ` + ${search.sites.length - 1} more site(s)` : ''} · graded ${new Date(search.analyzedAt * 1000).toLocaleString()}</div>
+        </div>
+      </div>
+      <p class="muted small" style="margin-top:10px">The Search Ladder is where your site stands in Google, 0 to 10. A rung counts only when everything on it and below it is done, so the next phase is always the first thing not yet cleared.</p>`;
+
+  return layout(client.name, `
+    ${flashHtml(flash)}
+    ${switcher}
+    <h1>${esc(client.name)} ${headline}</h1>
+    <p class="muted">${client.domain ? esc(client.domain) + ' · ' : ''}${active.length} site(s) checked every minute</p>
+    <div class="card"><h2>Sites</h2>${rows}</div>
+    <div class="card"><h2>Search</h2>${searchHtml}</div>
+    <div class="card"><h2>Alerts</h2>${alerts}</div>
+    <div class="card"><h2>Recent activity</h2>${eventsTable(events)}</div>
+  `, { nav });
+}
+
 // ---------- Admin console ----------
 export function adminPage({ user, clients, orphanMonitors, monitorTypes, kuma, integrations, events, flash }) {
   const nav = `<a href="/logout">Sign out</a>`;
@@ -280,7 +341,7 @@ export function adminPage({ user, clients, orphanMonitors, monitorTypes, kuma, i
         <span class="muted small">${c.crm_slug ? 'CRM: ' + esc(c.crm_slug) : '<span class="pill warn" title="The CRM cannot find this client until its slug is entered below">NO CRM SLUG</span>'}${c.domain ? ' · ' + esc(c.domain) : ''} · ${esc(c.source)}</span>
         <span class="pill ${c.down_count > 0 ? 'down' : c.monitors.length ? 'up' : 'unknown'}">${c.down_count > 0 ? c.down_count + ' DOWN' : c.monitors.length ? 'ALL UP' : 'NO MONITORS'}</span>
         ${gradePill(c.search)}
-        <span class="muted small">${c.monitors.length} monitor(s)</span>
+        <span class="muted small">${c.monitors.length} monitor(s) · ${c.users.length} can sign in</span>
         <span style="margin-left:auto">${alertStatusLine(c, integrations.mail)}</span>
       </summary>
       <div>
@@ -292,6 +353,11 @@ export function adminPage({ user, clients, orphanMonitors, monitorTypes, kuma, i
         ${searchSummaryHtml(c)}
         <h3>Alerts</h3>
         ${alertForm(c, { action: `/admin/clients/${c.id}/alerts`, back: '/admin', isAdmin: true, kumaChannels: kuma.channels, mailConfigured: integrations.mail })}
+        <h3>Who can sign in</h3>
+        ${c.users.length ? `<p>${c.users.map((u) => `<span class="pill ${u.user_id ? 'up' : 'unknown'}" title="${u.user_id ? 'has signed in' : 'granted, not yet signed in'}">${esc(u.email)}</span>
+          <form method="post" action="/admin/clients/${c.id}/users/remove" class="inline" onsubmit="return confirm('Revoke this address?')"><input type="hidden" name="email" value="${esc(u.email)}"><button class="danger small" style="padding:2px 8px" title="Revoke">×</button></form> `).join(' ')}</p>`
+          : '<p class="muted small">Nobody yet. The owner sees this client at /app once their Google address is granted here, or sent by the CRM as an owner.</p>'}
+        <form method="post" action="/admin/clients/${c.id}/users"><div class="row"><div><label>Grant access (Google email)</label><input name="email" type="email" required placeholder="owner@example.com"></div><div class="auto"><label>&nbsp;</label><button class="secondary">Grant</button></div></div></form>
         <h3>Client</h3>
         <form method="post" action="/admin/clients/${c.id}/update"><div class="row">
           <div><label>Name</label><input name="name" value="${esc(c.name)}"></div>
