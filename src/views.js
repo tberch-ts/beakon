@@ -179,7 +179,17 @@ const typeLabel = { http: 'HTTP', keyword: 'Keyword', ping: 'Ping', port: 'TCP',
 function alertStatusLine(client, mailConfigured) {
   const mode = effectiveAlertMode(client);
   if (mode === 'none') return `<span class="pill off">ALERTS OFF</span> <span class="muted small">${client.alert_email ? 'switched off' : 'no address set — nothing will be sent'}</span>`;
-  if (mode === 'email_unverified') return `<span class="pill warn">UNCONFIRMED</span> <span class="muted small">check ${esc(client.alert_email)} for a confirmation link — nothing is sent until then${mailConfigured ? '' : ' (SMTP is not configured on the server, so no mail went out)'}</span>`;
+  if (mode === 'email_unverified') {
+    // Three different situations wore one label until now. "Never reached
+    // them" is the one somebody has to act on, and it is the one a broken
+    // mail server produces silently.
+    const why = !mailConfigured
+      ? ' — SMTP is not configured on the server, so no mail went out'
+      : !client.alert_verify_sent_at
+        ? ' — no confirmation has ever reached them; the send failed. Resend once the mail server is working'
+        : ` — confirmation sent ${fmtTime(client.alert_verify_sent_at)}, not clicked yet`;
+    return `<span class="pill warn">UNCONFIRMED</span> <span class="muted small">nothing is sent to ${esc(client.alert_email)} until the link is clicked${why}</span>`;
+  }
   if (mode === 'kuma') return `<span class="pill info">UPTIME KUMA</span> <span class="muted small">channel ${esc(client.alert_channel)}</span>`;
   return `<span class="pill up">EMAIL ✓</span> <span class="muted small">${esc(client.alert_email)} confirmed</span>`;
 }
@@ -307,7 +317,7 @@ export function clientPage({ user, clients, client, monitors, search, events, ma
 }
 
 // ---------- Admin console ----------
-export function adminPage({ user, clients, orphanMonitors, monitorTypes, kuma, integrations, events, flash }) {
+export function adminPage({ user, clients, orphanMonitors, monitorTypes, kuma, integrations, unconfirmed = [], events, flash }) {
   const nav = `<a href="/logout">Sign out</a>`;
   const allMonitors = clients.flatMap((c) => c.monitors).concat(orphanMonitors);
   const downCount = allMonitors.filter((m) => m.active && m.last_status === 'down').length;
@@ -390,10 +400,26 @@ export function adminPage({ user, clients, orphanMonitors, monitorTypes, kuma, i
       <div class="stat"><b style="color:${downCount ? '#fca5a5' : '#86efac'}">${downCount}</b><span>down now</span></div>
       <div class="stat"><b>${kumaPill}</b><span>Uptime Kuma${kuma.url ? ' · ' + esc(kuma.url) : ''}</span>${kuma.lastError ? `<br><span class="err small">${esc(kuma.lastError)}</span>` : ''}</div>
       <div class="stat"><b>${onoff(integrations.mail)}</b><span>SMTP</span></div>
+      <div class="stat"><b style="color:${unconfirmed.length ? '#fcd34d' : '#86efac'}">${unconfirmed.length}</b><span>silent: alerts set, never confirmed</span></div>
       <div class="stat"><b>${onoff(integrations.crmSignals)} ${onoff(integrations.crmWebhook)}</b><span>CRM signals · CRM onboarding</span></div>
       <div class="stat"><b>${onoff(integrations.firebase)}</b><span>Google sign-in (CRM admins)</span></div>
       <div class="stat"><b>${onoff(integrations.places)}</b><span>Places lookup</span></div>
     </div>
+
+    ${unconfirmed.length ? `<div class="card">
+      <h2>${unconfirmed.length} client(s) get no alerts</h2>
+      <p class="muted">An address is set for each, and none of them has confirmed it, so every down, recovery and
+        SSL-expiry alert for these clients is dropped. A confirmation is sent once when the address is set and never
+        retried, so a spell of broken mail leaves clients here permanently — repairing the mail server on its own
+        moves none of them.</p>
+      <p class="muted small">${unconfirmed.filter((c) => !c.alert_verify_sent_at).length} never received one at all.</p>
+      <ul class="muted small">${unconfirmed.map((c) => `<li>${esc(c.name)} — ${esc(c.alert_email)}${c.alert_verify_sent_at ? ` (sent ${fmtTime(c.alert_verify_sent_at)})` : ' (never sent)'}</li>`).join('')}</ul>
+      <form method="post" action="/admin/alerts/resend-all" class="inline"
+        onsubmit="return confirm('Email all ${unconfirmed.length} of them a confirmation link?')">
+        <button ${integrations.mail ? '' : 'disabled title="No SMTP transport — nothing would go out"'}>Resend to all ${unconfirmed.length}</button>
+      </form>
+      <span class="muted small">Or tick "Mark verified" on a client below for an address you already know is right.</span>
+    </div>` : ''}
 
     ${clientCards || '<div class="card"><p class="muted">No clients yet.</p></div>'}
 

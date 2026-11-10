@@ -21,7 +21,8 @@ import {
   firebaseWebConfig, isFirebaseEnabled, verifyIdToken, findOrCreateUserFromFirebase, isAdminUser, getSessionUser, requireLogin, requireAdmin,
 } from './auth.js';
 import {
-  getClient, getClientByCrmSlug, listClients, createClient, updateClient, updateAlertSettings, resendVerification, verifyAlertToken, deleteClient,
+  getClient, getClientByCrmSlug, listClients, createClient, updateClient, updateAlertSettings, resendVerification, resendAllVerifications,
+  listUnconfirmedAlertClients, verifyAlertToken, deleteClient,
   listClientsForUser, userCanAccess, grantAccess, revokeAccess, listClientUsers, confirmAlertEmailBySignIn,
 } from './clients.js';
 import {
@@ -66,9 +67,14 @@ app.get('/', (req, res) => {
   if (!user) return res.redirect('/login');
   res.redirect(isAdminUser(user) ? '/admin' : '/app');
 });
+// `mail` says a transport was BUILT, not that it works: a revoked password
+// fails at send time and shows up only in the logs. It is still worth having
+// here -- it is the difference between "no SMTP settings" and "settings that
+// are being rejected", and answering it should not need a sign-in.
 app.get('/healthz', (req, res) => res.json({
   ok: true,
   kuma: isKumaEnabled() ? (kuma?.isReady() ? 'connected' : 'disconnected') : 'disabled',
+  mail: isMailConfigured() ? 'configured' : 'disabled',
 }));
 
 // ---- Auth: Google, via the CRM's Firebase project ----
@@ -163,6 +169,7 @@ app.get('/admin', requireAdmin, (req, res) => {
       channels: kuma?.isReady() ? kuma.listNotifications() : [], unlinked: unlinkedKumaMonitors(),
     },
     integrations: { mail: isMailConfigured(), crmSignals: isCrmSignalConfigured(), crmWebhook: isCrmWebhookConfigured(), firebase: isFirebaseEnabled(), places: isPlacesConfigured() },
+    unconfirmed: listUnconfirmedAlertClients(),
     events: recentEvents(40),
     flash: takeFlash(req),
   }));
@@ -219,6 +226,21 @@ app.post('/admin/clients/:id/alerts/resend', requireAdmin, async (req, res) => {
   if (!client) return res.status(404).send('No such client.');
   const sent = await resendVerification(client, { baseUrl: BASE_URL });
   flash(req, sent ? `Verification email sent to ${client.alert_email}.` : 'Nothing to send.', sent ? 'ok' : 'warn');
+  res.redirect('/admin');
+});
+
+// The one to press after fixing the mail server.
+//
+// A confirmation is sent once, on change, and never retried. So a spell of
+// broken SMTP leaves every client addressed during it permanently unconfirmed
+// and permanently silent, and repairing the credential does not move a single
+// one of them. This does.
+app.post('/admin/alerts/resend-all', requireAdmin, async (req, res) => {
+  const { sent, failed, total } = await resendAllVerifications({ baseUrl: BASE_URL });
+  if (!total) flash(req, 'Nothing to send: every client with an alert address has confirmed it.');
+  else if (!failed.length) flash(req, `Confirmation emails sent to ${sent.length} client(s). Alerts start for each one when somebody clicks the link.`);
+  else if (!sent.length) flash(req, `None of the ${total} went out. The mail server rejected every one — check the app logs for the reason.`, 'err');
+  else flash(req, `Sent ${sent.length} of ${total}. Failed: ${failed.map((c) => c.name).join(', ')}.`, 'warn');
   res.redirect('/admin');
 });
 

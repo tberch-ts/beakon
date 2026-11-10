@@ -120,7 +120,7 @@ nano .env                              # fill in the values (see below)
 ### 4. Fill in `.env`
 - `BASE_URL` — your public URL, e.g. `https://app.yourdomain.com`
 - `SESSION_SECRET` — run `openssl rand -hex 32` and paste it
-- **SMTP** — sign up for a free sender (Brevo gives 300 emails/day free; Resend and Mailgun also have free tiers). Paste host/port/user/pass and a verified `ALERT_FROM` address.
+- **SMTP** — Google Workspace: `smtp.gmail.com:587`, the mailbox as `SMTP_USER`, and an **app password** (2-Step Verification must be on) as `SMTP_PASS`. `ALERT_FROM` has to name that same mailbox or a "Send mail as" alias on it; Gmail rewrites or rejects any other from-address, which is indistinguishable from mail that never sent. A free sender (Brevo, Resend, Mailgun) works too — the transport is plain nodemailer.
 - **Stripe** — see the Stripe section below.
 
 ### 5. Run it under a process manager

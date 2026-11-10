@@ -196,20 +196,26 @@ export async function updateAlertSettings(client, { alertEmail, alertChannel, al
   let verifiedAt = changed ? null : client.alert_email_verified_at;
   let token = changed ? null : client.alert_verify_token;
   let expires = changed ? null : client.alert_verify_expires_at;
+  // A new address has been sent nothing, whatever we managed to send the old one.
+  let sentAt = changed ? null : client.alert_verify_sent_at;
   let sent = false;
 
   if (email && markVerified) {
-    verifiedAt = now(); token = null; expires = null;
+    verifiedAt = now(); token = null; expires = null; sentAt = null;
   } else if (email && !verifiedAt) {
     token = crypto.randomBytes(24).toString('base64url');
     expires = now() + VERIFY_TTL_SECONDS;
     sent = await sendVerificationEmail(email, `${baseUrl}/alerts/verify?token=${token}`, client.name);
+    // Only on success. A failed send leaves this null, which is the whole
+    // point: the page can then say nothing reached them, instead of implying
+    // they were asked and ignored it.
+    if (sent) sentAt = now();
   }
 
   db.prepare(`
     UPDATE clients SET alert_email = ?, alert_email_verified_at = ?, alert_verify_token = ?, alert_verify_expires_at = ?,
-      alert_channel = ?, alerts_enabled = ? WHERE id = ?
-  `).run(email, verifiedAt, token, expires, channel, enabled, client.id);
+      alert_verify_sent_at = ?, alert_channel = ?, alerts_enabled = ? WHERE id = ?
+  `).run(email, verifiedAt, token, expires, sentAt, channel, enabled, client.id);
   return { client: getClient(client.id), verificationSent: sent, verificationPending: Boolean(email && !verifiedAt) };
 }
 
@@ -218,7 +224,47 @@ export async function resendVerification(client, { baseUrl }) {
   const token = crypto.randomBytes(24).toString('base64url');
   db.prepare('UPDATE clients SET alert_verify_token = ?, alert_verify_expires_at = ? WHERE id = ?')
     .run(token, now() + VERIFY_TTL_SECONDS, client.id);
-  return sendVerificationEmail(client.alert_email, `${baseUrl}/alerts/verify?token=${token}`, client.name);
+  const sent = await sendVerificationEmail(client.alert_email, `${baseUrl}/alerts/verify?token=${token}`, client.name);
+  if (sent) db.prepare('UPDATE clients SET alert_verify_sent_at = ? WHERE id = ?').run(now(), client.id);
+  return sent;
+}
+
+/**
+ * Every client whose alerts are on, addressed, and still unconfirmed.
+ *
+ * These are the silent ones: effectiveAlertMode() returns 'email_unverified'
+ * for each, which sends nothing by design. One revoked SMTP credential puts
+ * every client provisioned while it was broken in here at once, and nothing
+ * takes them out again -- the verification mail they are waiting for was sent
+ * once, failed, and is never retried.
+ */
+export function listUnconfirmedAlertClients() {
+  return db.prepare(`
+    SELECT * FROM clients
+    WHERE alerts_enabled = 1 AND alert_email IS NOT NULL AND alert_email_verified_at IS NULL
+      AND (alert_channel IS NULL OR alert_channel = 'email')
+    ORDER BY name
+  `).all();
+}
+
+/**
+ * Ask every unconfirmed client to confirm, again.
+ *
+ * What to run once the mail server works again. Returns what happened per
+ * client rather than a bare count, because "sent 9, failed 2" is the answer
+ * to a question somebody is about to ask.
+ */
+export async function resendAllVerifications({ baseUrl }) {
+  const pending = listUnconfirmedAlertClients();
+  const sent = [];
+  const failed = [];
+  for (const client of pending) {
+    // eslint-disable-next-line no-await-in-loop -- a handful of clients, and
+    // a mail server is happier with one connection at a time than with ten.
+    const ok = await resendVerification(client, { baseUrl });
+    (ok ? sent : failed).push(client);
+  }
+  return { sent, failed, total: pending.length };
 }
 
 export function verifyAlertToken(token) {
