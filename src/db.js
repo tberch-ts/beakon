@@ -175,6 +175,15 @@ addColumn('clients', 'review_url', 'TEXT');
 // a client created here by hand gets it typed in, and from then on the CRM's
 // calls (/api/crm/clients/:slug/...) find this row.
 addColumn('clients', 'crm_slug', 'TEXT');
+// When a confirmation email was last ACCEPTED by the mail server.
+//
+// Without it, an address with no verified_at has two completely different
+// meanings that look identical on the page and in the database: "we emailed
+// them and they have not clicked yet", and "nothing ever left the building".
+// The second is what a revoked SMTP credential produces -- sendMail catches,
+// logs, returns false, and the row is written exactly as if it had worked --
+// and it is the one that needs somebody to do something about it.
+addColumn('clients', 'alert_verify_sent_at', 'INTEGER');
 
 db.exec(`
 CREATE UNIQUE INDEX IF NOT EXISTS idx_users_firebase_uid ON users(firebase_uid) WHERE firebase_uid IS NOT NULL;
